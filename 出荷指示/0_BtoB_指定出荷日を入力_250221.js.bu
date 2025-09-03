@@ -1,0 +1,256 @@
+/**
+ * 全媒体or媒体を選択し、指定出荷日を指定する
+ */
+(() => {
+  'use strict';
+  luxon.Settings.defaultLocale = 'ja';
+
+  const client = new KintoneRestAPIClient();
+  const APP_ID = kintone.app.getId();
+  const HC_APP_ID_IN_OUT_MANAGE = HC.apps.入出庫管理.id;
+
+  const SDGs_GROUP_MALL_NAME = {
+    Pontaパス: ['au', 'Pontaパス'],
+    Vサンプル: ['Tサンプル', 'Vサンプル'],
+  };
+
+  const HC_MEMBER = ['kiyo@happy-campaign.co.jp', 'sae.seki', 'hc-assistant'];
+
+  let mallList = {};
+
+  let resParam = { status: 1, message: '' };
+
+  /**
+   * 入出庫管理に登録用のデータを生成
+   * @param {*} records
+   * @param {*} b2bArrivalDate
+   */
+  const CreateInOutManageData = async (records, b2bArrivalDate) => {
+    let addData = [];
+    let recOrg = {};
+    recOrg['タイプ'] = { value: '納品' };
+    recOrg['倉庫ID'] = { value: 105 };
+    recOrg['納品ステータス'] = { value: '納品前' };
+    recOrg['納品予定日'] = { value: b2bArrivalDate };
+
+    for (let ii = 0; ii < records.length; ii++) {
+      let record = records[ii];
+
+      let itemsTable = record['商品情報'].value;
+      for (let jj = 0; jj < itemsTable.length; jj++) {
+        let item = itemsTable[jj].value;
+        if (item['商品コード'].value === null || item['商品コード'].value === '') {
+          continue;
+        }
+
+        // 有効な行なのでrecOrgをコピー
+        let recData = { ...recOrg };
+
+        recData['商品コード'] = { value: item['商品コード'].value };
+        recData['発注バラ数'] = { value: Number(item['個数'].value) };
+        recData['発注時の賞味期限'] = { value: item['賞味期限'].value };
+
+        addData.push(recData);
+      }
+    }
+
+    // 生成件数のログ（デバッグ用）
+    console.log('[入出庫-生成] addData件数:', addData.length);
+    if (addData.length > 0) {
+      console.debug('[入出庫-生成サンプル(先頭)]', addData[0]);
+    }
+    return addData;
+  };
+
+  /**
+   * 指定出荷日を設定する Main
+   * @param {*} mallName
+   * @param {*} shippingDate
+   * @returns
+   */
+  const SetShippingDate_Main = async (mallName, shippingDate) => {
+    try {
+      resParam.status = 1;
+
+      // 対象のモール
+      let malls = SDGs_GROUP_MALL_NAME[mallName];
+      if (mallName == '全媒体') {
+        malls = Object.values(SDGs_GROUP_MALL_NAME).flat();
+      }
+
+      // 対象媒体ログ
+      console.log('[BtoB] 選択媒体:', mallName);
+      // 展開後の媒体一覧
+      console.log('[BtoB] 展開媒体一覧:', malls);
+
+      if (!malls || malls.length === 0) {
+        console.warn('[BtoB] 対象媒体の展開結果が空です。キー名の誤りや未対応媒体の可能性:', mallName);
+        // return; // ここで明示中断してもOK（デバッグ時に便利）
+      }
+
+      // 対象のレコードを取得
+      let targetRecords = [];
+      for (let ii = 0; ii < malls.length; ii++) {
+        let mall = malls[ii];
+        let records = await client.record.getAllRecords({ app: APP_ID, condition: kintone.app.getQueryCondition() + ` and 掲載媒体名 = "${mall}"` });
+        targetRecords.push(...records);
+      }
+
+      // 対象レコード件数ログ
+      console.log('[BtoB] 対象レコード件数:', targetRecords.length);
+
+      if (targetRecords.length == 0) {
+        resParam.message = '指定出荷日を設定するレコードがありません。';
+        return;
+      }
+
+      // 出荷指示のレコード更新用のデータを生成
+      let upData = [];
+      console.log('[出荷指示-更新準備] 対象件数:', targetRecords.length);
+      for (let ii = 0; ii < targetRecords.length; ii++) {
+        let record = targetRecords[ii];
+        upData.push({ id: record.レコード番号.value, record: { 指定出荷日: { value: shippingDate } } });
+      }
+
+      // 出荷指示のレコードを更新（ログ＋例外捕捉）
+      let resp;
+      try {
+        console.log('[出荷指示-更新開始] 更新件数:', upData.length);
+        resp = await client.record.updateAllRecords({ app: APP_ID, records: upData });
+        console.log('[出荷指示-更新成功] 件数:', resp.records?.length, resp);
+      } catch (e) {
+        console.error('[出荷指示-更新失敗]', e);
+        resParam.message = '指定出荷日の設定に失敗しました。（出荷指示の更新エラー）';
+        await Swal.fire({
+          icon: 'error',
+          title: '指定出荷日を設定',
+          text: resParam.message,
+        });
+        return;
+      }
+
+      if (resp.records && resp.records.length > 0) {
+        resParam.message = '指定出荷日を設定しました。';
+
+        // B2B納品予定日
+        let b2bArrivalDate = luxon.DateTime.fromFormat(shippingDate, 'yyyy-MM-dd').plus({ days: 1 }).toFormat('yyyy-MM-dd');
+
+        // 入出庫管理に登録用のデータを生成
+        let addData = await CreateInOutManageData(targetRecords, b2bArrivalDate);
+
+        // 生成結果をログ
+        console.log('[入出庫-生成件数]', addData.length);
+        if (addData.length === 0) {
+          console.warn('[入出庫-警告] 生成データが0件。商品情報不足や個数0の可能性');
+          resParam.message = '指定出荷日は設定しましたが、入出庫に登録する明細が生成されませんでした（商品情報の不足がないかご確認ください）。';
+          await Swal.fire({
+            icon: 'warning',
+            title: '入出庫登録データなし',
+            text: resParam.message,
+          });
+          return;
+        }
+
+        // 入出庫管理に登録（ログ＋例外捕捉）
+        let respInOut;
+        try {
+          console.log('[入出庫-登録開始] 送信件数:', addData.length);
+          respInOut = await client.record.addAllRecords({ app: HC_APP_ID_IN_OUT_MANAGE, records: addData });
+          console.log('[入出庫-登録成功] 登録件数:', respInOut.records?.length, respInOut);
+          if (respInOut.records && respInOut.records.length > 0) {
+            resParam.message = '指定出荷日を設定し、入出庫管理に登録しました。';
+          } else {
+            console.warn('[入出庫-登録結果空] addAllRecordsの戻りが空');
+            resParam.message = '指定出荷日は設定しましたが、入出庫管理の登録結果が空でした。';
+          }
+        } catch (error) {
+          console.error('[入出庫-登録失敗]', error);
+          resParam.message = '指定出荷日は設定しましたが、入出庫管理の登録でエラーが発生しました。詳細はコンソールをご確認ください。';
+        }
+      } else {
+        resParam.message = '指定出荷日の設定に失敗しました。';
+      }
+    } catch (ex) {
+      console.log(ex);
+      resParam.message = '指定出荷日の設定に失敗しました。\n\n' + ex.message;
+    } finally {
+      await Swal.fire({
+        title: '指定出荷日を設定',
+        text: resParam.message,
+      });
+    }
+  };
+
+  kintone.events.on('app.record.index.show', async function (event) {
+    if (event.viewId != 6428141) return event;
+    if (!HC_MEMBER.includes(kintone.getLoginUser().code)) return event;
+
+    mallList = Object.keys(SDGs_GROUP_MALL_NAME).reduce((obj, key) => {
+      obj[key] = key;
+      return obj;
+    }, {});
+    mallList['全媒体'] = '全媒体';
+
+    // ボタン
+    if (!document.getElementById('hc_button_shipdate')) {
+      var button1 = document.createElement('button');
+      button1.id = 'hc_button_shipdate';
+      button1.classList.add('kintoneplugin-button-normal');
+      button1.innerText = '指定出荷日を入力';
+      kintone.app.getHeaderMenuSpaceElement().appendChild(button1);
+
+      button1.onclick = async () => {
+        const { value: targetMall } = await Swal.fire({
+          title: '出荷日を指定する媒体を選択',
+          input: 'select',
+          inputOptions: mallList,
+          inputPlaceholder: '媒体を選択してください',
+          showCancelButton: true,
+          inputValidator: (value) => {
+            return new Promise((resolve) => {
+              if (value) {
+                resolve();
+              } else {
+                resolve('どちらかを選択してください');
+              }
+            });
+          },
+        });
+
+        if (!targetMall) {
+          resParam.message = '媒体の選択がキャンセルされました。';
+          await Swal.fire({
+            title: '出荷日を指定',
+            text: resParam.message,
+            timer: 5000,
+            timerProgressBar: true,
+            willClose: () => {},
+          });
+          return;
+        }
+
+        let { value: shippingDate } = await Swal.fire({
+          title: '指定出荷日を入力',
+          text: '指定出荷日を入力してください。',
+          icon: 'question',
+          input: 'date',
+          inputAttributes: { min: luxon.DateTime.local().toFormat('yyyy-MM-dd') },
+          showCancelButton: true,
+        });
+        if (!shippingDate) {
+          resParam.message = '指定出荷日の入力がキャンセルされました。';
+          await Swal.fire({
+            title: '指定出荷日を入力',
+            text: resParam.message,
+            timer: 5000,
+            timerProgressBar: true,
+            willClose: () => {},
+          });
+          return;
+        }
+
+        await SetShippingDate_Main(targetMall, shippingDate);
+      };
+    }
+  });
+})();

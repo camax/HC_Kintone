@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Node (将来導入する場合のため)
+node_modules/
+dist/
