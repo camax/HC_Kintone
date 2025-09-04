@@ -218,30 +218,15 @@
     }, {});
     mallList['全媒体'] = '全媒体';
 
-    // ボタン
-    // 既存の同名ボタン（他スクリプトが作ったもの）を掃除して衝突を避ける
-    (() => {
-      const header = kintone.app.getHeaderMenuSpaceElement();
-      if (!header) return;
-      const texts = ['指定出荷日を入力'];
-      const btns = Array.from(header.querySelectorAll('button'));
-      btns.forEach((b) => {
-        if (texts.includes((b.textContent || '').trim()) && b.id !== 'hc_button_shipdate') {
-          console.log('[BtoB v2] 旧ボタンを削除:', b);
-          b.remove();
-        }
-      });
-    })();
-
     // ボタンを取得 or 作成し、常に自分のハンドラに差し替える
-    let button1 = document.getElementById('hc_button_shipdate');
+    let button1 = document.getElementById('hc_button_shipdate_BtoB');
     if (!button1) {
       button1 = document.createElement('button');
-      button1.id = 'hc_button_shipdate';
+      button1.id = 'hc_button_shipdate_BtoB';
       button1.classList.add('kintoneplugin-button-normal');
       button1.innerText = '指定出荷日を入力';
       kintone.app.getHeaderMenuSpaceElement().appendChild(button1);
-      button1.innerText = '媒体別 指定出荷日を入力（v2）'; // 一時的な目印
+      button1.innerText = '媒体別 指定出荷日を入力（BtoB）'; // 一時的な目印
       button1.type = 'button';
       console.log('[BtoB v2] ボタンを新規作成');
     } else {
@@ -255,15 +240,6 @@
       button1.dataset.hcBusy = '1';
 
       try {
-        // クリック時の掃除（そのまま）
-        (() => {
-          const header = kintone.app.getHeaderMenuSpaceElement();
-          if (!header) return;
-          Array.from(header.querySelectorAll('button')).forEach((b) => {
-            if ((b.textContent || '').trim() === '指定出荷日を入力' && b.id !== 'hc_button_shipdate') b.remove();
-          });
-        })();
-
         console.log('[BtoB v2] ボタン押下を検知');
 
         const { value: targetMall } = await Swal.fire({
@@ -324,7 +300,7 @@
         (ev) => {
           const t = ev.target;
           const label = (t.textContent || '').trim();
-          if (label === '指定出荷日を入力' && t.id !== 'hc_button_shipdate') {
+          if (label === '指定出荷日を入力' && t.id !== 'hc_button_shipdate_BtoB') {
             console.log('[BtoB v2] 旧ボタンがクリックされました（v2ハンドラ未経由）', t);
             // 旧処理はそのまま動かす（stopしない）
           }
@@ -349,7 +325,7 @@
           const el = ev.target && (ev.target.closest ? ev.target.closest('button,a') : null);
           if (!el) return;
           const label = (el.textContent || '').trim();
-          if (label === '指定出荷日を入力' && el.id !== 'hc_button_shipdate') {
+          if (label === '指定出荷日を入力' && el.id !== 'hc_button_shipdate_BtoB') {
             console.log('[BtoB v2] 旧ボタンがクリックされました（v2ハンドラ未経由 / document捕捉）', el);
             // 旧処理は止めない（ログのみ）
           }
