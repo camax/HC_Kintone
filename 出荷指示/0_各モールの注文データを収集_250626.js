@@ -167,6 +167,27 @@ const formatForExcel = (val) => {
 	const GetMatterRecords = async () =>
 	{
 		mattRecords = await GetAllRecords(HC_APP_ID_MATTER);
+		// モール管理番号が空のレコードを抽出してログ出力
+		let emptyMallNumberRecords = mattRecords.filter(r => !r.モール管理番号.value);
+		if (emptyMallNumberRecords.length) {
+		    console.warn("⚠ 案件管理：モール管理番号が空のレコード", emptyMallNumberRecords.map(r => ({
+		        案件ID: r.$id.value,
+		        掲載媒体名: r.掲載媒体名.value,
+		        モール管理番号: r.モール管理番号.value,
+		        取引形式: r.取引形式.value
+		    })));
+		    // 詳細JSON形式でも出力（CSV変換用にログファイルへ残す）
+		    console.log("⚠ 案件管理：モール管理番号が空のレコード 詳細(JSON)",
+		        JSON.stringify(emptyMallNumberRecords.map(r => ({
+		            案件ID: r.$id.value,
+		            掲載媒体名: r.掲載媒体名.value,
+		            モール管理番号: r.モール管理番号.value,
+		            取引形式: r.取引形式.value
+		        })), null, 2)
+		    );
+		} else {
+		    console.log("✅ 案件管理：モール管理番号が空のレコードはありません");
+		}
 		if (resParam.status != 1) return;
 	}
 
@@ -215,6 +236,17 @@ const formatForExcel = (val) => {
 			let mattRec = mattRecords.find(record => record.掲載媒体名.value === "au" && record.モール管理番号.value === shipRecords.au[ii].PJTID.value);
 			// デバッグログ追加
 			console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
+			if (!mattRec) {
+			    const shipRec = shipRecords.au[ii];
+			    const mediaName = "au";
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec.PJTID?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
+			}
 			if (mattRec)
 			{
 				let itemInfos = [];
@@ -312,6 +344,17 @@ const formatForExcel = (val) => {
 			let mattRec = mattRecords.find(record => record.掲載媒体名.value === "Tサンプル" && record.モール管理番号.value === shipRecords.Tサンプル[ii].PJTID.value);
 			// デバッグログ追加
 			console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
+			if (!mattRec) {
+			    const shipRec = shipRecords.Tサンプル[ii];
+			    const mediaName = "Tサンプル";
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec.PJTID?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
+			}
 			if (mattRec)
 			{
 				let itemInfos = [];
@@ -426,6 +469,14 @@ const formatForExcel = (val) => {
 				if (candidates.length) {
 					console.warn("[mattRec未取得] 媒体名一致候補のモール管理番号一覧:", candidates.map(c => c.モール管理番号.value));
 				}
+			    // 追加ログ
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec[mallManageNumber.くまポン]?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
 			}
 
 			if (mattRec)
@@ -538,6 +589,16 @@ const formatForExcel = (val) => {
 				if (candidates.length) {
 					console.warn("[mattRec未取得] 媒体名一致候補のモール管理番号一覧:", candidates.map(c => c.モール管理番号.value));
 				}
+			    // 追加ログ
+			    const shipRec = shipRecords.eecoto[ii];
+			    const mediaName = "eecoto";
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec[mallManageNumber.eecoto]?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
 			}
 			if (mattRec)
 			{
@@ -581,7 +642,9 @@ const formatForExcel = (val) => {
 				if (itemInfos.length)
 				{
 					let warehouseRec = warehouseRecords.find(record => record.倉庫ID.value == "104");
-					arrRtn.push({
+					let newRecord={
+
+
 						出荷管理アプリID: { value: HC_APP_ID_SHIPPING_EECOTO },
 						出荷管理レコードID: { value: shipRecords.eecoto[ii].$id.value },
 						案件グループID: { value: mattRec.案件グループID.value },
@@ -620,7 +683,18 @@ const formatForExcel = (val) => {
 						ご依頼主電話番号: { value: warehouseRec.電話番号.value },
 
 						配送業者: { value: mattRec.配送業者.value },
-					});
+					};
+					// 注文メモの内容を確認して記事欄5へ反映
+					const rawCoupon = shipRecords.eecoto[ii].注文メモ ? shipRecords.eecoto[ii].注文メモ.value : "";
+					const coupon = (rawCoupon || "").toUpperCase().trim();
+
+					if (coupon.includes("ANA")) {
+						newRecord['記事欄5'] = { value: 'ANA Pocket分' };
+					} else if (coupon.includes("JAL")) {
+						newRecord['記事欄5'] = { value: 'JALミニマイル特典分' };
+					}
+					// どちらも含まれない場合は何も入れない（空欄のまま）
+					arrRtn.push(newRecord);
 				}
 			}
 		}
@@ -647,6 +721,16 @@ const formatForExcel = (val) => {
 				if (candidates.length) {
 					console.warn("[mattRec未取得] 媒体名一致候補のモール管理番号一覧:", candidates.map(c => c.モール管理番号.value));
 				}
+			    // 追加ログ
+			    const shipRec = shipRecords.リロ[ii];
+			    const mediaName = "リロ";
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec[mallManageNumber.リロ]?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
 			}
 			if (mattRec)
 			{
@@ -755,6 +839,16 @@ const formatForExcel = (val) => {
 				if (candidates.length) {
 					console.warn("[mattRec未取得] 媒体名一致候補のモール管理番号一覧:", candidates.map(c => c.モール管理番号.value));
 				}
+			    // 追加ログ
+			    const shipRec = shipRecords.ベネ[ii];
+			    const mediaName = "ベネ";
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec[mallManageNumber.ベネ]?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
 			}
 			if (mattRec)
 			{
@@ -869,6 +963,16 @@ const formatForExcel = (val) => {
 				if (candidates.length) {
 					console.warn("[mattRec未取得] 媒体名一致候補のモール管理番号一覧:", candidates.map(c => c.モール管理番号.value));
 				}
+			    // 追加ログ
+			    const shipRec = shipRecords.Tポイント[ii];
+			    const mediaName = "Tポイント";
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec[mallManageNumber.Tポイント]?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
 			}
 			if (mattRec)
 			{
@@ -978,6 +1082,16 @@ const formatForExcel = (val) => {
 				if (candidates.length) {
 					console.warn("[mattRec未取得] 媒体名一致候補のモール管理番号一覧:", candidates.map(c => c.モール管理番号.value));
 				}
+			    // 追加ログ
+			    const shipRec = shipRecords.社販[ii];
+			    const mediaName = "社販";
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec[mallManageNumber.社販]?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
 			}
 			if (mattRec)
 			{
@@ -1111,6 +1225,16 @@ const formatForExcel = (val) => {
 				if (candidates.length) {
 					console.warn("[mattRec未取得] 媒体名一致候補のモール管理番号一覧:", candidates.map(c => c.モール管理番号.value));
 				}
+			    // 追加ログ
+			    const shipRec = shipRecords.坂戸以外[ii];
+			    const mediaName = "坂戸以外";
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec[mallManageNumber.坂戸以外]?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
 			}
 			if (mattRec)
 			{
@@ -1222,6 +1346,16 @@ const formatForExcel = (val) => {
 				if (candidates.length) {
 					console.warn("[mattRec未取得] 媒体名一致候補のモール管理番号一覧:", candidates.map(c => c.モール管理番号.value));
 				}
+			    // 追加ログ
+			    const shipRec = shipRecords.KAUCHE[ii];
+			    const mediaName = "おためし";
+			    console.error(`[案件未取得エラー] 媒体名: ${mediaName || "(不明)"}, モール管理番号: ${shipRec[mallManageNumber.KAUCHE]?.value || "(なし)"}`);
+			    console.table(mattRecords.filter(r => r.掲載媒体名.value === mediaName).map(r => ({
+			        案件ID: r.$id.value,
+			        掲載媒体名: r.掲載媒体名.value,
+			        モール管理番号: r.モール管理番号.value,
+			        取引形式: r.取引形式.value
+			    })));
 			}
 			if (mattRec)
 			{
