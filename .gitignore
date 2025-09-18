@@ -8,3 +8,9 @@
 # Node (将来導入する場合のため)
 node_modules/
 dist/
+# === backups / temp ===
+*_bu.js
+*.bu
+*.txt
+**/テンポラリ_*.txt
+.DS_Store
