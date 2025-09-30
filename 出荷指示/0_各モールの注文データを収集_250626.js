@@ -37,6 +37,20 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
   const HC_MEMBER = ['kiyo@happy-campaign.co.jp', 'sae.seki', 'hc-assistant'];
 
+  // --- 媒体 → 出荷管理アプリID マップ（Phase5用） ---
+  const APP_ID_BY_MEDIA = {
+    くまポン: HC_APP_ID_SHIPPING_KUMAPON,
+    eecoto: HC_APP_ID_SHIPPING_EECOTO, // BEAUTH
+    リロ: HC_APP_ID_SHIPPING_RIRO,
+    ベネ: HC_APP_ID_SHIPPING_BENE,
+    Tポイント: HC_APP_ID_SHIPPING_TPOINT,
+    社販: HC_APP_ID_SHIPPING_SHAHAN,
+    坂戸以外: HC_APP_ID_SHIPPING_SAKADOIGAI,
+    KAUCHE: HC_APP_ID_SHIPPING_KAUCHE,
+    // 'au':       HC_APP_ID_SHIPPING_AU,
+    // 'Tサンプル': HC_APP_ID_SHIPPING_TSAMPLE,
+  };
+
   let shipRecords = {
     //au: [],
     //Tサンプル: [],
@@ -690,7 +704,7 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
         }
 
         if (itemInfos.length) {
-          let warehouseRec = warehouseRecords.find((record) => record.倉庫ID.value === '103');
+          let warehouseRec = pickWarehouse('103');
 
           // 出荷指示アプリに登録するレコード本体を作成
           let newRecord = {
@@ -815,7 +829,7 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
           });
         }
         if (itemInfos.length) {
-          let warehouseRec = warehouseRecords.find((record) => record.倉庫ID.value === '104');
+          let warehouseRec = pickWarehouse('104');
           let newRecord = {
             出荷管理アプリID: { value: HC_APP_ID_SHIPPING_EECOTO },
             出荷管理レコードID: { value: shipRecords.eecoto[ii].$id.value },
@@ -1214,7 +1228,7 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
           });
         }
         if (itemInfos.length) {
-          let warehouseRec = warehouseRecords.find((record) => record.倉庫ID.value === '103');
+          let warehouseRec = pickWarehouse('103');
           arrRtn.push({
             出荷管理アプリID: { value: HC_APP_ID_SHIPPING_TPOINT },
             出荷管理レコードID: { value: shipRecords.Tポイント[ii].$id.value },
@@ -1507,7 +1521,7 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
         }
 
         if (itemInfos.length) {
-          const warehouseRec = warehouseRecords.find((r) => r.倉庫ID.value === '103');
+          const warehouseRec = pickWarehouse('103');
           const rawDate = shipRec.注文日?.value || shipRec.受付日?.value || '';
           let orderDateStr = dtExecute;
           if (rawDate) {
@@ -1638,7 +1652,7 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
         }
         if (itemInfos.length) {
           // 倉庫は 103（他媒体と合わせる）
-          const warehouseRec = warehouseRecords.find((r) => r.倉庫ID.value === '103');
+          const warehouseRec = pickWarehouse('103');
 
           // 注文日のフォールバック（ISO → yyyy/MM/dd → 実行日）
           const shipRec = shipRecords.KAUCHE[ii];
@@ -1935,10 +1949,19 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
     let lastErr = null;
     for (let i = 0; i <= MAX_RETRY; i++) {
       try {
+        // DEBUG: リトライ回数と対象件数を表示
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          console.log(`🔄 UpdateAllRecords: try=${i + 1}/${MAX_RETRY + 1}, count=${recData.length}, appId=${appId}`);
+        }
         await client.record.updateAllRecords({ app: appId, records: recData });
         // 成功：要求分すべて更新できた前提でカウント
         return { updated: recData.length, failed: 0, error: null };
       } catch (e) {
+        // DEBUG: 失敗時のコードと試行回数を表示
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          const code = e?.response?.status ?? e?.status ?? 'unknown';
+          console.warn(`⚠️ UpdateAllRecords failed: code=${code}, try=${i + 1}/${MAX_RETRY + 1}, willRetry=${i < MAX_RETRY}`);
+        }
         lastErr = e;
         if (!shouldRetry(e) || i === MAX_RETRY) {
           console.error(e);
@@ -1968,41 +1991,16 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
     for (const key in shipRecords) {
       if (!shipRecords.hasOwnProperty(key)) continue;
 
-      // 媒体→アプリID
-      let appId = '';
-      switch (key) {
-        // case "au": appId = HC_APP_ID_SHIPPING_AU; break;
-        // case "Tサンプル": appId = HC_APP_ID_SHIPPING_TSAMPLE; break;
-        case 'くまポン':
-          appId = HC_APP_ID_SHIPPING_KUMAPON;
-          break;
-        case 'eecoto':
-          appId = HC_APP_ID_SHIPPING_EECOTO;
-          break;
-        case 'リロ':
-          appId = HC_APP_ID_SHIPPING_RIRO;
-          break;
-        case 'ベネ':
-          appId = HC_APP_ID_SHIPPING_BENE;
-          break;
-        case 'Tポイント':
-          appId = HC_APP_ID_SHIPPING_TPOINT;
-          break;
-        case '社販':
-          appId = HC_APP_ID_SHIPPING_SHAHAN;
-          break;
-        case '坂戸以外':
-          appId = HC_APP_ID_SHIPPING_SAKADOIGAI;
-          break;
-        case 'KAUCHE':
-          appId = HC_APP_ID_SHIPPING_KAUCHE;
-          break;
-        default:
-          continue;
+      // 媒体→アプリID（辞書化）
+      const appId = APP_ID_BY_MEDIA[key];
+      if (!appId) {
+        // 未対応媒体はスキップ（将来追加してもここを書き変えるだけ）
+        perMedia.push({ key, requested: 0, updated: 0, failed: 0 });
+        continue;
       }
 
       // 今回「出荷指示」に登録できたレコード（＝更新対象）を抽出
-      const addedRecords = recData.filter((r) => r['出荷管理アプリID'].value == appId);
+      const addedRecords = recData.filter((r) => r['出荷管理アプリID'].value === appId);
       if (addedRecords.length === 0) {
         perMedia.push({ key, requested: 0, updated: 0, failed: 0 });
         continue;
