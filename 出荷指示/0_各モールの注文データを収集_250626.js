@@ -37,6 +37,45 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
   const HC_MEMBER = ['kiyo@happy-campaign.co.jp', 'sae.seki', 'hc-assistant'];
 
+  // --- API メトリクス（見える化） ---
+  const METRICS = {
+    api: {
+      getAll: 0, // GetAllRecords 経由の取得（案件/商品/在庫/倉庫）
+      getShip: 0, // 出荷管理（媒体ごと）の取得
+      addAll: 0, // 出荷指示への一括作成
+      updateAll: 0, // 出荷管理側の一括更新
+    },
+    byMedia: {}, // 例: { 'くまポン': { getShip: { attempts:0, ms:0 } } }
+    time: {
+      getAllMs: 0,
+      getShipMs: 0,
+      addAllMs: 0,
+      updateAllMs: 0,
+      totalMs: 0,
+    },
+    startedAt: typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(),
+  };
+
+  const nowMs = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+  const lapMs = (t0) => nowMs() - t0;
+
+  const dumpMetrics = () => {
+    // 合計時間
+    METRICS.time.totalMs = Math.round(nowMs() - METRICS.startedAt);
+
+    if (typeof DEBUG !== 'undefined' && DEBUG) {
+      console.log('🧭 API Metrics', JSON.parse(JSON.stringify(METRICS)));
+      // Swal にも載せたい場合は message に追記（DEBUG中のみ）
+      const lines = ['--- API Metrics ---', `calls: getShip=${METRICS.api.getShip}, getAll=${METRICS.api.getAll}, addAll=${METRICS.api.addAll}, updateAll=${METRICS.api.updateAll}`, `time(ms): ship=${METRICS.time.getShipMs}, all=${METRICS.time.getAllMs}, add=${METRICS.time.addAllMs}, upd=${METRICS.time.updateAllMs}, total=${METRICS.time.totalMs}`];
+      resParam.message = (resParam.message ? resParam.message + '\n' : '') + lines.join('\n');
+    }
+    // 非DEBUGでも要点サマリのみ追記（1行）
+    if (!(typeof DEBUG !== 'undefined' && DEBUG)) {
+      const s = `API: getShip=${METRICS.api.getShip}, getAll=${METRICS.api.getAll}, ` + `add=${METRICS.api.addAll}, upd=${METRICS.api.updateAll} | ` + `ms: ship=${METRICS.time.getShipMs}, all=${METRICS.time.getAllMs}, ` + `add=${METRICS.time.addAllMs}, upd=${METRICS.time.updateAllMs}, total=${METRICS.time.totalMs}`;
+      resParam.message = (resParam.message ? resParam.message + '\n' : '') + s;
+    }
+  };
+
   // --- 媒体 → 出荷管理アプリID マップ（Phase5用） ---
   const APP_ID_BY_MEDIA = {
     くまポン: HC_APP_ID_SHIPPING_KUMAPON,
@@ -71,6 +110,43 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
   // 商品コード → レコード(群) のインデックス
   let ITEM_BY_CODE = new Map(); // 商品コード => itemRecord
   let STOCK_BY_CODE = new Map(); // 商品コード => [stockRecord, ...]（賞味期限昇順）
+  // 案件インデックス（媒体名 + キー → 案件レコード）
+  let MATT_BY_MEDIA_KEY = new Map();
+
+  // --- Matter索引の構築＆検索 ---
+  const buildMattIndex = () => {
+    MATT_BY_MEDIA_KEY = new Map();
+    for (const r of mattRecords || []) {
+      const media = r?.掲載媒体名?.value || r?.掲載媒体名_表示用?.value || '';
+      const key = r?.モール管理番号?.value || r?.案件グループID?.value || '';
+      const m = String(media).trim();
+      const k = String(key).trim();
+      if (!m || !k) continue;
+      MATT_BY_MEDIA_KEY.set(`${m}::${k}`, r);
+    }
+    if (typeof DEBUG !== 'undefined' && DEBUG) {
+      console.log(`[buildMattIndex] size=${MATT_BY_MEDIA_KEY.size}`);
+    }
+  };
+
+  const getMatt = (media, key) => {
+    if (key == null) return null;
+    const m = String(media ?? '').trim();
+    const k = String(key).trim();
+    if (!m || !k) return null;
+    return MATT_BY_MEDIA_KEY.get(`${m}::${k}`) || null;
+  };
+
+  // 媒体名に一致するモール管理番号（または案件グループID）の一覧を返す
+  const listMattKeysForMedia = (media) => {
+    const out = [];
+    const m = String(media ?? '').trim();
+    if (!m) return out;
+    for (const k of MATT_BY_MEDIA_KEY.keys()) {
+      if (k.startsWith(`${m}::`)) out.push(k.split('::')[1]);
+    }
+    return out;
+  };
 
   // 商品コードの正規化（揺れ対策）
   function normalizeCode(code) {
@@ -109,8 +185,11 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
    * @param {string} queCond
    * @param {string[]=} fields  取得したいフィールド配列（省略可）
    */
+
   const GetAllRecords = async (appId, queCond, fields) => {
     try {
+      // 計時開始
+      const t0 = nowMs();
       const params = { app: appId };
       // 空白だけの条件は弾く（trimして判定・設定）
       const cond = typeof queCond === 'string' ? queCond.trim() : '';
@@ -133,6 +212,10 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
         try {
           const resp = await client.record.getAllRecords(params);
           resParam.status = 1;
+
+          // ← ここでメトリクス加算（成功のみカウント）
+          METRICS.api.getAll += 1;
+          METRICS.time.getAllMs += lapMs(t0);
           return resp;
         } catch (e) {
           lastErr = e;
@@ -208,16 +291,39 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
       return code === 429 || (code >= 500 && code <= 599);
     };
 
+    // 全体の開始時刻（※合計時間を測りたい場合。getShipMsには二重計上しない）
+    const t0All = nowMs();
+
+    // 媒体ごとのメトリクス用スロットを確保
+    for (const { key } of SHIPPING_SOURCES) {
+      if (!METRICS.byMedia[key]) {
+        METRICS.byMedia[key] = { getShip: { attempts: 0, ms: 0, ok: null, count: 0, code: null } };
+      }
+    }
+
     // 媒体ごとに getAllRecords を並列発火（個別の失敗は握り潰して結果に載せる）
     const tasks = SHIPPING_SOURCES.map(({ key, app }) =>
       (async () => {
+        // この媒体の計時開始（全リトライを含めた時間）
+        const t0Media = nowMs();
+        let attempts = 0;
         let lastErr = null;
         for (let i = 0; i <= MAX_RETRY; i++) {
           try {
+            attempts = i + 1;
             const recs = await client.record.getAllRecords({ app, condition: CONDITION });
             if (typeof DEBUG !== 'undefined' && DEBUG) {
               console.log(`[GetShippingRecords] ${key} 取得成功（試行 ${i + 1}/${MAX_RETRY + 1}）: ${recs?.length ?? 0}件`);
             }
+            // ── 成功：媒体ごとの計測を1回だけ反映 ──
+            const elapsed = lapMs(t0Media);
+            METRICS.api.getShip += 1; // 成功媒体のカウント
+            METRICS.time.getShipMs += elapsed; // 媒体時間を合算
+            METRICS.byMedia[key].getShip.attempts = attempts;
+            METRICS.byMedia[key].getShip.ms += elapsed;
+            METRICS.byMedia[key].getShip.ok = true;
+            METRICS.byMedia[key].getShip.count = recs?.length ?? 0;
+            METRICS.byMedia[key].getShip.code = null; // 成功なので無し
             return { key, recs };
           } catch (e) {
             lastErr = e;
@@ -226,12 +332,26 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
               console.warn(`[GetShippingRecords] ${key} 失敗 code=${code}（試行 ${i + 1}/${MAX_RETRY + 1}）`, e);
             }
             if (!shouldRetry(e) || i === MAX_RETRY) {
+              // ── 失敗：媒体ごとの最終結果を記録 ──
+              const elapsed = lapMs(t0Media);
+              METRICS.byMedia[key].getShip.attempts = attempts;
+              METRICS.byMedia[key].getShip.ms += elapsed;
+              METRICS.byMedia[key].getShip.ok = false;
+              METRICS.byMedia[key].getShip.count = 0;
+              METRICS.byMedia[key].getShip.code = e?.response?.status ?? e?.status ?? null;
               return { key, error: e };
             }
             const jitter = Math.floor(Math.random() * 100);
             await sleep(BASE_DELAY * Math.pow(2, i) + jitter);
           }
         }
+        // ── 失敗：媒体ごとの最終結果を記録 ──
+        const elapsed = lapMs(t0Media);
+        METRICS.byMedia[key].getShip.attempts = attempts;
+        METRICS.byMedia[key].getShip.ms += elapsed;
+        METRICS.byMedia[key].getShip.ok = false;
+        METRICS.byMedia[key].getShip.count = 0;
+        METRICS.byMedia[key].getShip.code = lastErr?.response?.status ?? lastErr?.status ?? null;
         // 通常ここには来ないが型を合わせる
         return { key, error: lastErr || new Error('unknown error') };
       })()
@@ -318,10 +438,11 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
     // 参考ログ
     const emptyMall = (mattRecords || []).filter((r) => !r.モール管理番号?.value);
-    if (emptyMall.length) {
-      console.warn('⚠ 案件管理：モール管理番号が空のレコード 件数:', emptyMall.length);
+    const emptyGrp = (mattRecords || []).filter((r) => !r.案件グループID?.value);
+    if (emptyMall.length || emptyGrp.length) {
+      console.warn('⚠ 案件管理：空フィールド件数', { モール管理番号空: emptyMall.length, 案件グループID空: emptyGrp.length });
     } else {
-      console.log('✅ 案件管理：モール管理番号が空のレコードはありません');
+      console.log('✅ 案件管理：モール管理番号/案件グループID の空レコードはありません');
     }
   };
 
@@ -406,7 +527,8 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
     for (let ii = 0; ii < shipRecords.au.length; ii++) {
       const shipRec = shipRecords.au[ii];
       // 案件レコードを取得
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === 'au' && record.モール管理番号.value === shipRecords.au[ii].PJTID.value);
+      const mattKey = shipRecords.au[ii]?.PJTID?.value;
+      let mattRec = getMatt('au', mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       if (!mattRec) {
@@ -516,7 +638,8 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
     for (let ii = 0; ii < shipRecords.Tサンプル.length; ii++) {
       // 案件レコードを取得
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === 'Tサンプル' && record.モール管理番号.value === shipRecords.Tサンプル[ii].PJTID.value);
+      const mattKey = shipRecords.Tサンプル[ii]?.PJTID?.value;
+      let mattRec = getMatt('Tサンプル', mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       if (!mattRec) {
@@ -632,19 +755,19 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
       const mediaName = shipRec.媒体名 && shipRec.媒体名.value ? shipRec.媒体名.value : 'くまポン';
 
       // 案件レコードを、レコード自身の媒体名を使って検索
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === mediaName && record.モール管理番号.value === shipRec[mallManageNumber.くまポン].value);
+      const mattKey = shipRec?.[mallManageNumber.くまポン]?.value;
+      let mattRec = getMatt(mediaName, mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       // mattRec未取得時の詳細デバッグログ
       if (!mattRec) {
         console.warn(`[mattRec未取得] 媒体名条件: ${mediaName || '(不明)'}, 出荷レコード側モール管理番号: ${shipRec[mallManageNumber.くまポン]?.value || '(なし)'}`);
-        let candidates = mattRecords.filter((r) => r.掲載媒体名.value === mediaName);
-        console.warn(`[mattRec未取得] 案件管理側で媒体名一致の件数: ${candidates.length}`);
-        if (candidates.length) {
-          console.warn(
-            '[mattRec未取得] 媒体名一致候補のモール管理番号一覧:',
-            candidates.map((c) => c.モール管理番号.value)
-          );
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          const keysForMedia = listMattKeysForMedia(mediaName);
+          console.warn(`[mattRec未取得] 媒体名一致の件数: ${keysForMedia.length}`);
+          if (keysForMedia.length) {
+            console.warn('[mattRec未取得] 候補キー一覧:', keysForMedia);
+          }
         }
         // 追加ログ
         console.error(`[案件未取得エラー] 媒体名: ${mediaName || '(不明)'}, モール管理番号: ${shipRec[mallManageNumber.くまポン]?.value || '(なし)'}`);
@@ -760,18 +883,18 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
     for (let ii = 0; ii < shipRecords.eecoto.length; ii++) {
       // 案件レコードを取得
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === 'eecoto' && record.案件グループID.value === shipRecords.eecoto[ii][mallManageNumber.eecoto].value);
+      const mattKey = shipRecords.eecoto[ii]?.[mallManageNumber.eecoto]?.value;
+      let mattRec = getMatt('eecoto', mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       if (!mattRec) {
         console.warn(`[mattRec未取得] 媒体名条件: eecoto, 出荷レコード側モール管理番号: ${shipRecords.eecoto[ii][mallManageNumber.eecoto]?.value || '(なし)'}`);
-        let candidates = mattRecords.filter((r) => r.掲載媒体名.value === 'eecoto');
-        console.warn(`[mattRec未取得] 案件管理側で媒体名一致の件数: ${candidates.length}`);
-        if (candidates.length) {
-          console.warn(
-            '[mattRec未取得] 媒体名一致候補のモール管理番号一覧:',
-            candidates.map((c) => c.モール管理番号.value)
-          );
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          const keysForMedia = listMattKeysForMedia('eecoto');
+          console.warn(`[mattRec未取得] 媒体名一致の件数: ${keysForMedia.length}`);
+          if (keysForMedia.length) {
+            console.warn('[mattRec未取得] 候補キー一覧:', keysForMedia);
+          }
         }
         // 追加ログ
         const shipRec = shipRecords.eecoto[ii];
@@ -895,18 +1018,18 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
     for (let ii = 0; ii < shipRecords.リロ.length; ii++) {
       // 案件レコードを取得
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === 'リロ' && record.モール管理番号.value === shipRecords.リロ[ii][mallManageNumber.リロ].value);
+      const mattKey = shipRecords.リロ[ii]?.[mallManageNumber.リロ]?.value;
+      let mattRec = getMatt('リロ', mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       if (!mattRec) {
         console.warn(`[mattRec未取得] 媒体名条件: リロ, 出荷レコード側モール管理番号: ${shipRecords.リロ[ii][mallManageNumber.リロ]?.value || '(なし)'}`);
-        let candidates = mattRecords.filter((r) => r.掲載媒体名.value === 'リロ');
-        console.warn(`[mattRec未取得] 案件管理側で媒体名一致の件数: ${candidates.length}`);
-        if (candidates.length) {
-          console.warn(
-            '[mattRec未取得] 媒体名一致候補のモール管理番号一覧:',
-            candidates.map((c) => c.モール管理番号.value)
-          );
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          const keysForMedia = listMattKeysForMedia('リロ');
+          console.warn(`[mattRec未取得] 媒体名一致の件数: ${keysForMedia.length}`);
+          if (keysForMedia.length) {
+            console.warn('[mattRec未取得] 候補キー一覧:', keysForMedia);
+          }
         }
         // 追加ログ
         const shipRec = shipRecords.リロ[ii];
@@ -1021,18 +1144,18 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
     for (let ii = 0; ii < shipRecords.ベネ.length; ii++) {
       // 案件レコードを取得
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === 'ベネ' && record.モール管理番号.value === shipRecords.ベネ[ii][mallManageNumber.ベネ].value);
+      const mattKey = shipRecords.ベネ[ii]?.[mallManageNumber.ベネ]?.value;
+      let mattRec = getMatt('ベネ', mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       if (!mattRec) {
         console.warn(`[mattRec未取得] 媒体名条件: ベネ, 出荷レコード側モール管理番号: ${shipRecords.ベネ[ii][mallManageNumber.ベネ]?.value || '(なし)'}`);
-        let candidates = mattRecords.filter((r) => r.掲載媒体名.value === 'ベネ');
-        console.warn(`[mattRec未取得] 案件管理側で媒体名一致の件数: ${candidates.length}`);
-        if (candidates.length) {
-          console.warn(
-            '[mattRec未取得] 媒体名一致候補のモール管理番号一覧:',
-            candidates.map((c) => c.モール管理番号.value)
-          );
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          const keysForMedia = listMattKeysForMedia('ベネ');
+          console.warn(`[mattRec未取得] 媒体名一致の件数: ${keysForMedia.length}`);
+          if (keysForMedia.length) {
+            console.warn('[mattRec未取得] 候補キー一覧:', keysForMedia);
+          }
         }
         // 追加ログ
         const shipRec = shipRecords.ベネ[ii];
@@ -1155,18 +1278,18 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
     for (let ii = 0; ii < shipRecords.Tポイント.length; ii++) {
       // 案件レコードを取得
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === 'Tポイント' && record.モール管理番号.value === shipRecords.Tポイント[ii][mallManageNumber.Tポイント].value);
+      const mattKey = shipRecords.Tポイント[ii]?.[mallManageNumber.Tポイント]?.value;
+      let mattRec = getMatt('Tポイント', mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       if (!mattRec) {
         console.warn(`[mattRec未取得] 媒体名条件: Tポイント, 出荷レコード側モール管理番号: ${shipRecords.Tポイント[ii][mallManageNumber.Tポイント]?.value || '(なし)'}`);
-        let candidates = mattRecords.filter((r) => r.掲載媒体名.value === 'Tポイント');
-        console.warn(`[mattRec未取得] 案件管理側で媒体名一致の件数: ${candidates.length}`);
-        if (candidates.length) {
-          console.warn(
-            '[mattRec未取得] 媒体名一致候補のモール管理番号一覧:',
-            candidates.map((c) => c.モール管理番号.value)
-          );
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          const keysForMedia = listMattKeysForMedia('Tポイント');
+          console.warn(`[mattRec未取得] 媒体名一致の件数: ${keysForMedia.length}`);
+          if (keysForMedia.length) {
+            console.warn('[mattRec未取得] 候補キー一覧:', keysForMedia);
+          }
         }
         // 追加ログ
         const shipRec = shipRecords.Tポイント[ii];
@@ -1283,18 +1406,18 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
     for (let ii = 0; ii < shipRecords.社販.length; ii++) {
       // 案件レコードを取得
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === '社販' && record.モール管理番号.value === shipRecords.社販[ii][mallManageNumber.社販].value);
+      const mattKey = shipRecords.社販[ii]?.[mallManageNumber.社販]?.value;
+      let mattRec = getMatt('社販', mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       if (!mattRec) {
         console.warn(`[mattRec未取得] 媒体名条件: 社販, 出荷レコード側モール管理番号: ${shipRecords.社販[ii][mallManageNumber.社販]?.value || '(なし)'}`);
-        let candidates = mattRecords.filter((r) => r.掲載媒体名.value === '社販');
-        console.warn(`[mattRec未取得] 案件管理側で媒体名一致の件数: ${candidates.length}`);
-        if (candidates.length) {
-          console.warn(
-            '[mattRec未取得] 媒体名一致候補のモール管理番号一覧:',
-            candidates.map((c) => c.モール管理番号.value)
-          );
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          const keysForMedia = listMattKeysForMedia('社販');
+          console.warn(`[mattRec未取得] 媒体名一致の件数: ${keysForMedia.length}`);
+          if (keysForMedia.length) {
+            console.warn('[mattRec未取得] 候補キー一覧:', keysForMedia);
+          }
         }
         // 追加ログ
         const shipRec = shipRecords.社販[ii];
@@ -1454,18 +1577,18 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
     for (let ii = 0; ii < shipRecords.坂戸以外.length; ii++) {
       // 案件レコードを取得
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === '坂戸以外' && record.モール管理番号.value === shipRecords.坂戸以外[ii][mallManageNumber.坂戸以外].value);
+      const mattKey = shipRecords.坂戸以外[ii]?.[mallManageNumber.坂戸以外]?.value;
+      let mattRec = getMatt('坂戸以外', mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       if (!mattRec) {
         console.warn(`[mattRec未取得] 媒体名条件: 坂戸以外, 出荷レコード側モール管理番号: ${shipRecords.坂戸以外[ii][mallManageNumber.坂戸以外]?.value || '(なし)'}`);
-        let candidates = mattRecords.filter((r) => r.掲載媒体名.value === '坂戸以外');
-        console.warn(`[mattRec未取得] 案件管理側で媒体名一致の件数: ${candidates.length}`);
-        if (candidates.length) {
-          console.warn(
-            '[mattRec未取得] 媒体名一致候補のモール管理番号一覧:',
-            candidates.map((c) => c.モール管理番号.value)
-          );
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          const keysForMedia = listMattKeysForMedia('坂戸以外');
+          console.warn(`[mattRec未取得] 媒体名一致の件数: ${keysForMedia.length}`);
+          if (keysForMedia.length) {
+            console.warn('[mattRec未取得] 候補キー一覧:', keysForMedia);
+          }
         }
         // 追加ログ
         const shipRec = shipRecords.坂戸以外[ii];
@@ -1581,18 +1704,18 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
 
     for (let ii = 0; ii < shipRecords.KAUCHE.length; ii++) {
       // 案件レコードを取得
-      let mattRec = mattRecords.find((record) => record.掲載媒体名.value === 'おためし' && record.モール管理番号.value === shipRecords.KAUCHE[ii][mallManageNumber.KAUCHE].value);
+      const mattKey = shipRecords.KAUCHE[ii]?.[mallManageNumber.KAUCHE]?.value;
+      let mattRec = getMatt('おためし', mattKey);
       // デバッグログ追加
       console.warn(`[取引形式デバッグ] 媒体名: ${mattRec?.掲載媒体名?.value}, モール管理番号: ${mattRec?.モール管理番号?.value}, 案件レコードID: ${mattRec?.$id?.value}, 取引形式: ${mattRec?.取引形式?.value}, mattRec取得成功: ${!!mattRec}`);
       if (!mattRec) {
         console.warn(`[mattRec未取得] 媒体名条件: おためし, 出荷レコード側モール管理番号: ${shipRecords.KAUCHE[ii][mallManageNumber.KAUCHE]?.value || '(なし)'}`);
-        let candidates = mattRecords.filter((r) => r.掲載媒体名.value === 'おためし');
-        console.warn(`[mattRec未取得] 案件管理側で媒体名一致の件数: ${candidates.length}`);
-        if (candidates.length) {
-          console.warn(
-            '[mattRec未取得] 媒体名一致候補のモール管理番号一覧:',
-            candidates.map((c) => c.モール管理番号.value)
-          );
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+          const keysForMedia = listMattKeysForMedia('おためし');
+          console.warn(`[mattRec未取得] 媒体名一致の件数: ${keysForMedia.length}`);
+          if (keysForMedia.length) {
+            console.warn('[mattRec未取得] 候補キー一覧:', keysForMedia);
+          }
         }
         // 追加ログ
         const shipRec = shipRecords.KAUCHE[ii];
@@ -1887,11 +2010,14 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
    * @returns
    */
   const AddRecordsForShipInstruction = async (recData) => {
+    const t0Add = nowMs();
     try {
       return client.record
         .addAllRecords({ app: APP_ID, records: recData })
         .then(function (resp) {
           resParam.status = 1;
+          METRICS.api.addAll += 1;
+          METRICS.time.addAllMs += lapMs(t0Add);
           // --- 追加：結果サマリ作成（作成件数／失敗件数） ---
           const requested = Array.isArray(recData) ? recData.length : 0;
 
@@ -1915,6 +2041,8 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
           return resp;
         })
         .catch(function (e) {
+          METRICS.api.addAll += 1;
+          METRICS.time.addAllMs += lapMs(t0Add);
           console.log(e);
           resParam.status = 9;
           resParam.message = `出荷指示アプリにレコードを作成できませんでした。\n` + e;
@@ -1934,6 +2062,7 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
    * @returns
    */
   const UpdateAllRecords = async (appId, recData) => {
+    const t0Upd = nowMs();
     // 空配列は早期終了（成功0件）
     if (!Array.isArray(recData) || recData.length === 0) {
       return { updated: 0, failed: 0, error: null };
@@ -1955,6 +2084,8 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
         }
         await client.record.updateAllRecords({ app: appId, records: recData });
         // 成功：要求分すべて更新できた前提でカウント
+        METRICS.api.updateAll += 1;
+        METRICS.time.updateAllMs += lapMs(t0Upd);
         return { updated: recData.length, failed: 0, error: null };
       } catch (e) {
         // DEBUG: 失敗時のコードと試行回数を表示
@@ -1965,6 +2096,9 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
         lastErr = e;
         if (!shouldRetry(e) || i === MAX_RETRY) {
           console.error(e);
+
+          METRICS.api.updateAll += 1;
+          METRICS.time.updateAllMs += lapMs(t0Upd);
           // 失敗：全件失敗として集計（SDKが部分失敗を返す実装でなければここでOK）
           return { updated: 0, failed: recData.length, error: e };
         }
@@ -2099,6 +2233,12 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
       console.log('✅ 案件レコード取得完了:', mattRecords.length);
       if (resParam.status !== 1) return;
 
+      // 案件索引用（媒体::キー → 案件レコード）
+      let MATT_BY_MEDIA_KEY = new Map();
+
+      // --- 索引を構築（1回だけ） ---
+      buildMattIndex();
+
       // 2) 案件から商品コードを抽出（商品コード_1〜10）
       const productCodeSet = new Set();
       for (const m of mattRecords || []) {
@@ -2180,6 +2320,7 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
       // 出荷管理アプリの「運用ステータス」を"出荷依頼済み"変更
       await UpdateShippingRecords(recData);
       if (resParam.status !== 1) return;
+      if (typeof dumpMetrics === 'function') dumpMetrics();
 
       if (!resParam.message) {
         resParam.message = '各モールの注文データを収集しました。';
