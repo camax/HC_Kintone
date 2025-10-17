@@ -14,3 +14,4 @@ dist/
 *.txt
 **/テンポラリ_*.txt
 .DS_Store
+出荷指示/元/
