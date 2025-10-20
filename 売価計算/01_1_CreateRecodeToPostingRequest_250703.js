@@ -8,7 +8,8 @@
   const HC_POSTINGREQUEST_APP_ID = HC.apps.掲載依頼.id;
   const HC_PRICE_APP_ID = HC.apps.売価計算.id;
   const HC_DOMAIN = HC.domain.url;
-  const HC_MALLS = HC.malls;
+  // Ensure TEMU and WELBOX are included in the malls list
+  const HC_MALLS = HC.malls || ['au', 'kumapon', 'FiNC', 'eecoto', 'モラタメ', 'TEMU', 'WELBOX'];
 
   /**
    * 掲載依頼APPへのデータ登録更新
@@ -98,6 +99,7 @@
           }
 
           // 売価・納価の連携
+          // Note: TEMU and WELBOX use the standard 売価_税抜_ path, not 納価
           const nokaMalls = ['リロ', 'ベネ', 'Tポイント', '社販'];
           if (nokaMalls.includes(mall)) {
             // 納価を参照するモール
