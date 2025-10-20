@@ -1,17 +1,21 @@
 # macOS
 .DS_Store
 
-# Editors
+# Editor settings
 .vscode/
 .idea/
 
-# Node (将来導入する場合のため)
+# Node (for future use)
 node_modules/
 dist/
-# === backups / temp ===
+
+# === Backups / Temporary Files ===
 *_bu.js
 *.bu
 *.txt
 **/テンポラリ_*.txt
-.DS_Store
 出荷指示/元/
+
+# === Ignore all Backup folders across apps ===
+退避_*/
+*/退避_*/
