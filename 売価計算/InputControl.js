@@ -8,7 +8,11 @@
  */
 (() => {
   'use strict';
-
+  console.info('[IC] InputControl.js: evaluated (top-level)');
+  window.onerror = function (message, source, lineno, colno, error) {
+    console.error('[IC] window.onerror:', { message, source, lineno, colno, error });
+  };
+  /*
   // ==== 環境・定数 ====
   // ==== DEBUGモード設定 ====
   // URLパラメータまたは localStorage で切り替え可
@@ -23,10 +27,16 @@
       return !!(window.HC && HC.DEBUG);
     }
   })();
+  */
+  const DEBUG = true;
+  console.info('[IC] DEBUG flag:', DEBUG);
 
   if (DEBUG) console.log('[DEBUG mode active] InputControl.js loaded');
   const client = new KintoneRestAPIClient();
-  const ITEM_MASTER_APP_ID = HC.apps.商品マスタ.id;
+  const ITEM_MASTER_APP_ID = (window.HC && HC.apps && HC.apps.商品マスタ && HC.apps.商品マスタ.id) || null;
+  if (ITEM_MASTER_APP_ID === null) {
+    console.warn('[IC] ITEM_MASTER_APP_ID is null (HC.apps.商品マスタ.id not available at load time)');
+  }
 
   // サブテーブル/フィールドのコード
   const TABLE = '商品情報一覧';
@@ -70,6 +80,8 @@
     disableGlobalFields(event);
     setFieldAccessibility(event);
     resetLinkedFields(event); // 複製時もここで初期化
+    // 初期描画後の競合対策（再描画をまたいで有効化を確定）
+    forceEnableEditableFieldsWithRetry(6, 250);
     return event;
   });
 
@@ -77,6 +89,8 @@
   kintone.events.on(['app.record.edit.show'], (event) => {
     disableGlobalFields(event);
     setFieldAccessibility(event);
+    // 初期描画後の競合対策（再描画をまたいで有効化を確定）
+    forceEnableEditableFieldsWithRetry(6, 250);
     return event;
   });
 
@@ -135,17 +149,21 @@
 
     // --- 商品コード自動採番（1行目だけ） ---
     let firstItemCode = 'hc0001';
-    try {
-      const r = await client.record.getRecords({
-        app: ITEM_MASTER_APP_ID,
-        fields: ['商品コード'],
-        query: 'order by 商品コード desc limit 1',
-      });
-      const last = r.records.length === 0 ? 'hc0000' : r.records[0]['商品コード'].value;
-      const n = Number(String(last).replace('hc', '')) + 1;
-      firstItemCode = 'hc' + (n < 10000 ? String(n).padStart(4, '0') : String(n));
-    } catch (e) {
-      console.warn('[generateItemSubTable] get max 商品コード failed', e);
+    if (ITEM_MASTER_APP_ID === null) {
+      console.warn('[IC] skip auto item-code numbering because ITEM_MASTER_APP_ID is null');
+    } else {
+      try {
+        const r = await client.record.getRecords({
+          app: ITEM_MASTER_APP_ID,
+          fields: ['商品コード'],
+          query: 'order by 商品コード desc limit 1',
+        });
+        const last = r.records.length === 0 ? 'hc0000' : r.records[0]['商品コード'].value;
+        const n = Number(String(last).replace('hc', '')) + 1;
+        firstItemCode = 'hc' + (n < 10000 ? String(n).padStart(4, '0') : String(n));
+      } catch (e) {
+        console.warn('[generateItemSubTable] get max 商品コード failed', e);
+      }
     }
 
     // --- 10行の初期配列を作成 ---
@@ -165,6 +183,11 @@
    * - ※ 常に手入力可：発注ケース数 / 発注バラ数 / 商品コード
    */
   function setFieldAccessibility(event) {
+    if (DEBUG) {
+      console.group('[setFieldAccessibility] start');
+      console.log('record:', event.record);
+      console.groupEnd();
+    }
     // 🔧 将来対応ポイント：可変行対応
     // 現在は最大10行想定だが、今後は可変行に対応予定。
     // setFieldAccessibility は forEach で全行処理しているため、
@@ -194,6 +217,80 @@
         console.log(`[setFieldAccessibility] row ${idx + 1} itemRecordId=${id || '(blank)'} -> MSRP_EACH/COST_EACH/CASQTY editable=${editable}`);
       }
     });
+
+    // 🔧 常時入力可能フィールドを再適用（上書き防止）
+    rows.forEach((rowObj) => {
+      const row = rowObj.value;
+      safeSetDisabled(row, F.MSRP_EACH, false);
+      safeSetDisabled(row, F.COST_EACH, false);
+    });
+
+    if (DEBUG) {
+      console.group('[setFieldAccessibility] detailed row states');
+      rows.forEach((rowObj, idx) => {
+        const row = rowObj.value;
+        console.group(`Row ${idx + 1}`);
+        console.log(`${F.ITEM_RECORD_ID}:`, row[F.ITEM_RECORD_ID]?.value);
+        console.log(`${F.MSRP_EACH} disabled:`, row[F.MSRP_EACH]?.disabled, 'value:', row[F.MSRP_EACH]?.value);
+        console.log(`${F.COST_EACH} disabled:`, row[F.COST_EACH]?.disabled, 'value:', row[F.COST_EACH]?.value);
+        console.groupEnd();
+      });
+      console.groupEnd();
+    }
+
+    // === DOM構造確認ログ ===
+    console.group('[DEBUG] Subtable DOM check');
+    document.querySelectorAll('div[fieldcode]').forEach((el, i) => {
+      console.log(i, el.getAttribute('fieldcode'), el);
+    });
+    console.groupEnd();
+
+    // ==== DOM監視による再適用（2行目以降が無効化される対策） ====
+    if (!window._HC_MSRP_DOM_OBSERVER) {
+      // === サブテーブルDOM監視対象の検出 ===
+      const tableEl = document.querySelector(`div[fieldcode="${TABLE}"]`) || document.querySelector(`div[data-field-code="${TABLE}"]`) || document.querySelector(`table.subtable-gaia`);
+
+      if (!tableEl) {
+        console.warn('[Observer] table element not found');
+        console.group('[DEBUG] Subtable DOM candidates');
+        document.querySelectorAll('table,div').forEach((el, i) => {
+          if (el.getAttribute('fieldcode') || el.getAttribute('data-field-code')) {
+            console.log(i, el.tagName, el.getAttribute('fieldcode') || el.getAttribute('data-field-code'), el);
+          }
+        });
+        console.groupEnd();
+        return;
+      }
+      console.log('[Observer] table element found:', tableEl);
+      // --- Replace observer callback with record API-based re-enabling ---
+      const observer = new MutationObserver(() => {
+        setTimeout(() => {
+          const record = kintone.app.record.get();
+          if (!record || !record.record || !record.record[TABLE]) return;
+
+          const tableRows = record.record[TABLE].value;
+          tableRows.forEach((row, i) => {
+            const msrpField = row.value[F.MSRP_EACH];
+            const costField = row.value[F.COST_EACH];
+
+            if (msrpField) msrpField.disabled = false;
+            if (costField) costField.disabled = false;
+
+            console.log(`[Observer-Fix] Row ${i + 1} re-enabled via record API`);
+          });
+
+          // Kintone UI再描画
+          kintone.app.record.set(record);
+        }, 300);
+      });
+      observer.observe(tableEl, { childList: true, subtree: true });
+      window._HC_MSRP_DOM_OBSERVER = observer;
+      if (DEBUG) console.log('[Observer] MutationObserver started for MSRP_EACH/COST_EACH');
+    }
+
+    // 🔁 初期表示後の再描画競合に備えてリトライを起動
+    if (DEBUG) console.log('[Final UI refresh replaced by retry mechanism]');
+    forceEnableEditableFieldsWithRetry(6, 250);
   }
 
   /**
@@ -247,6 +344,51 @@
 
   // ==== ヘルパ ====
 
+  // ==== 強制有効化のリトライ（初期表示の競合対策） ====
+  function forceEnableEditableFieldsWithRetry(retries = 6, interval = 250) {
+    let attempt = 0;
+    const apply = () => {
+      const rec = kintone.app.record.get();
+      if (!rec || !rec.record || !rec.record[TABLE]) return false;
+
+      let changed = false;
+      rec.record[TABLE].value.forEach((rowObj, i) => {
+        const row = rowObj.value;
+        const msrp = row[F.MSRP_EACH];
+        const cost = row[F.COST_EACH];
+
+        if (msrp && msrp.disabled) {
+          msrp.disabled = false;
+          changed = true;
+          if (DEBUG) console.log(`[retry] row ${i + 1} MSRP_EACH -> disabled=false`);
+        }
+        if (cost && cost.disabled) {
+          cost.disabled = false;
+          changed = true;
+          if (DEBUG) console.log(`[retry] row ${i + 1} COST_EACH -> disabled=false`);
+        }
+      });
+
+      if (changed) {
+        if (DEBUG) console.log('[retry] applying record.set()');
+        kintone.app.record.set(rec);
+      }
+      return changed;
+    };
+
+    const tick = () => {
+      attempt++;
+      const ok = apply();
+      if (DEBUG) console.log(`[retry] attempt ${attempt}/${retries}, changed=${ok}`);
+      if (attempt < retries) {
+        setTimeout(tick, interval);
+      }
+    };
+
+    // 初回は軽く遅延してから開始
+    setTimeout(tick, 200);
+  }
+
   // 行の雛形を作成
   function createEmptyRow(number, itemCode) {
     return {
@@ -274,13 +416,36 @@
 
   // サブテーブル行の disabled セッター（安全版）
   function safeSetDisabled(row, fieldCode, disabled) {
+    if (DEBUG) {
+      const before = row && row[fieldCode] ? row[fieldCode].disabled : undefined;
+      console.log(`[safeSetDisabled] field: ${fieldCode}, before: ${before}, set to: ${disabled}`);
+    }
     if (row && row[fieldCode]) row[fieldCode].disabled = disabled;
+    if (DEBUG) {
+      const after = row && row[fieldCode] ? row[fieldCode].disabled : undefined;
+      console.log(`[safeSetDisabled] field: ${fieldCode}, after: ${after}`);
+    }
   }
 
   // レコード直下フィールドの disabled セッター（安全版）
   function safeSetDisabledRec(record, fieldCode, disabled) {
     if (record && record[fieldCode]) record[fieldCode].disabled = disabled;
   }
+
+  /**
+   * 6) サブテーブル行追加時にも再度フィールド制御を適用
+   * - これを入れないと、新しい行が disabled のままになる
+   */
+  // サブテーブル行追加／商品コード変更時など、常に再実行
+  kintone.events.on(['app.record.create.change.' + TABLE, 'app.record.edit.change.' + TABLE, 'app.record.create.change.' + TABLE + '.' + F.ITEM_CODE, 'app.record.edit.change.' + TABLE + '.' + F.ITEM_CODE], (event) => {
+    setTimeout(() => setFieldAccessibility(event), 50);
+    return event;
+  });
+  // Diagnostic: unconditional event hook to verify firing
+  kintone.events.on(['app.record.create.show', 'app.record.edit.show'], (event) => {
+    console.info('[IC] kintone show event fired');
+    return event;
+  });
 })();
 
 /**
