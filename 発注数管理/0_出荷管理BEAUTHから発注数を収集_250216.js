@@ -10,6 +10,7 @@
   const HC_APP_ID_SHIPPING_BEAUTH = 568; // 出荷管理BEAUTH
   const HC_APP_ID_MATTER = 514; // 案件管理
   const HC_APP_ID_SET_NUMBER = 501; // セット数管理
+  const MEDIA_CODE = 'eecoto'; // BEAUTHプログラム用コード
 
   let dtNow = luxon.DateTime.local();
   let resParam = { status: 1, message: '' };
@@ -28,7 +29,7 @@
   const GetAllRecords = async (appId, queCond = '') => {
     try {
       return client.record
-        .getAllRecords({ app: appId, condition: queCond })
+        .getAllRecords({ app: appId, query: queCond })
         .then(function (resp) {
           resParam.status = 1;
           return resp;
@@ -60,7 +61,7 @@
       console.log('出荷管理のレコード', shippingManageRecords);
 
       // 案件管理のレコードを取得
-      let matterRecords = await GetAllRecords(HC_APP_ID_MATTER, '掲載媒体名 = "beauth" and 案件グループID != ""');
+      let matterRecords = await GetAllRecords(HC_APP_ID_MATTER, '掲載媒体名 = "eecoto" and 案件グループID != ""');
       console.log('案件管理のレコード', matterRecords);
 
       // セット数管理のレコードを取得
@@ -71,7 +72,7 @@
       let orderNumberRecords = await GetAllRecords(APP_ID, '日付 >= LAST_MONTH()');
       console.log('発注数管理のレコード', orderNumberRecords);
 
-      let arrAllOrderNums = []; // [{案件グループID: "", [{注文日: "", 数量: ""}, ...]}, ...]
+      let orderSummaryByProject = [];
 
       /* 出荷管理のフィールド
             SKU：案件グループID
@@ -117,15 +118,42 @@
             */
 
       let updateRecords = [];
-
+      console.log('出荷管理のレコード', shippingManageRecords);
       for (let ii = 0; ii < arrAllOrderNums.length; ii++) {
         let shippingRec = arrAllOrderNums[ii];
         // 案件レコードを取得
-        let matRec = matterRecords.find((rec) => rec.案件グループID.value == shippingRec.案件グループID && rec.掲載媒体名.value == 'beauth');
+        let matRec = matterRecords.find((rec) => rec.案件グループID.value == shippingRec.案件グループID && rec.掲載媒体名.value == MEDIA_CODE);
         if (!matRec) continue;
 
         for (let jj = 0; jj < shippingRec.注文日ごとの数量.length; jj++) {
-          let dtOrder = luxon.DateTime.fromFormat(shippingRec.注文日ごとの数量[jj].注文日, 'yyyy-MM-dd');
+          // 生の注文日文字列を取得
+          let rawDate = (shippingRec.注文日ごとの数量[jj].注文日 || '').trim();
+
+          // ISO形式（例: 2025-10-23）としてパース
+          let dtOrder = luxon.DateTime.fromISO(rawDate);
+
+          // ISO形式で無効なら、スラッシュ区切り（例: 2025/10/23）も試す
+          if (!dtOrder.isValid) {
+            dtOrder = luxon.DateTime.fromFormat(rawDate, 'yyyy/MM/dd');
+          }
+
+          // それでも無効なら、年号付きなどのパターンも試す（任意）
+          if (!dtOrder.isValid) {
+            dtOrder = luxon.DateTime.fromFormat(rawDate, 'yyyy年MM月dd日');
+          }
+
+          // まだ無効ならエラーログ出してスキップ
+          if (!dtOrder.isValid) {
+            console.warn('注文日が不明な形式です:', rawDate);
+            continue;
+          }
+
+          // ✅ 異常日付チェック（月が1〜12以外・日が1〜31以外）
+          if (dtOrder.month < 1 || dtOrder.month > 12 || dtOrder.day < 1 || dtOrder.day > 31) {
+            console.warn('注文日の月または日が異常です:', rawDate, '(month:', dtOrder.month, ', day:', dtOrder.day, ')');
+            continue;
+          }
+
           let dtFirst = dtOrder.set({ day: 1 });
 
           // 発注数管理から案件管理レコードID＆日付でレコードを取得
@@ -139,15 +167,28 @@
                 日付: { value: dtFirst.toFormat('yyyy-MM-dd') },
               },
             });
+
             if (!addResp || !addResp.id) {
               console.error('addRecordの返り値が不正です:', addResp);
               continue;
             }
-            const getResp = await client.record.getRecord({
-              app: APP_ID,
-              id: addResp.id,
-            });
-            orderNumberRec = getResp.record;
+
+            let orderNumberRec;
+            try {
+              const getResp = await client.record.getRecord({ app: APP_ID, id: addResp.id });
+              orderNumberRec = getResp.record;
+            } catch (err1) {
+              console.warn('getRecord失敗、1秒後に再試行:', err1);
+              // 1秒待って再試行
+              await new Promise((r) => setTimeout(r, 1000));
+              try {
+                const retryResp = await client.record.getRecord({ app: APP_ID, id: addResp.id });
+                orderNumberRec = retryResp.record;
+              } catch (err2) {
+                console.error('getRecord再試行も失敗しました:', err2);
+                continue; // それでも失敗した場合はスキップ
+              }
+            }
           }
 
           // 発注数管理に販売数を加算（未定義でも0扱い）
@@ -157,6 +198,8 @@
           orderNumberRec[`day_${numDay}`] = { value: current + addQty };
 
           console.log('更新後の発注数管理のレコード', orderNumberRec);
+
+          console.log('更新対象レコード数:', updateRecords.length);
           updateRecords.push(orderNumberRec);
         }
       }
