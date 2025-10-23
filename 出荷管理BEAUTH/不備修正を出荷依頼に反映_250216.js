@@ -11,13 +11,14 @@
 	const HC_APP_ID_SHIPPING_REQUEST = HC.apps.出荷指示.id;
 
 	const HC_APP_ID_SHIPPING_KUMAPON = HC.apps.出荷管理KUMAPON.id;
-	const HC_APP_ID_SHIPPING_EECOTO = HC.apps.出荷管理EECOTO.id;	// BEAUTH
+	const HC_APP_ID_SHIPPING_EECOTO = HC.apps.出荷管理EECOTO.id;	//  EECOTO
 	const HC_APP_ID_SHIPPING_RIRO = HC.apps.出荷管理RIRO.id;
 	const HC_APP_ID_SHIPPING_BENE = HC.apps.出荷管理BENE.id;
 	const HC_APP_ID_SHIPPING_TPOINT = HC.apps.出荷管理TPOINT.id;
 	const HC_APP_ID_SHIPPING_SHAHAN = HC.apps.出荷管理SHAHAN.id;
 	const HC_APP_ID_SHIPPING_SAKADOIGAI = HC.apps.出荷管理SAKADOIGAI.id;
 	const HC_APP_ID_SHIPPING_KAUCHE = HC.apps.出荷管理KAUCHE.id;
+	const HC_APP_ID_SHIPPING_BEAUTH = HC.apps.出荷管理BEAUTH.id;
 
 	let resParam = { status: 1, message: '' }
 
@@ -27,15 +28,15 @@
 		container: document.body
 	});
 
-
+ EECOTO
 
 
 
 	/**
 	 * Conditionを指定してレコードを一括取得
-	 * @param {*} appId 
-	 * @param {*} queCond 
-	 * @returns 
+	 * @param {*} appId
+	 * @param {*} queCond
+	 * @returns
 	 */
 	const GetAllRecords = async (appId, queCond) =>
 	{
@@ -66,8 +67,8 @@
 
 	/**
 	 * 出荷管理アプリのレコードを更新
-	 * @param {*} recData 
-	 * @returns 
+	 * @param {*} recData
+	 * @returns
 	 */
 	const UpdateRecord = async (appId, recId, recData) =>
 	{
@@ -86,8 +87,8 @@
 
 	/**
 	 * 修正済みの値を取得
-	 * @param {*} record 
-	 * @returns 
+	 * @param {*} record
+	 * @returns
 	 */
 	const getFixedValues = (record) =>
 	{
@@ -168,6 +169,15 @@
 					"送付先電話番号": { value: record.配送先_電話番号.value },
 				}
 				break;
+			case HC_APP_ID_SHIPPING_BEAUTH:
+					objValues =
+					{
+						"送付先名": { value: record.氏名?.value || '' },
+						"送付先郵便番号": { value: record.郵便番号?.value || '' },
+						"送付先住所": { value: record.住所?.value || '' },
+						"送付先電話番号": { value: record.電話番号?.value || '' },
+					}
+				break;
 			default:
 				break;
 		}
@@ -177,7 +187,7 @@
 
 	/**
 	 * 不備チェック
-	 * @param {*} allRec 
+	 * @param {*} allRec
 	 */
 	const CheckAddress = (objValues) =>
 	{
@@ -281,7 +291,7 @@
 
 	/**
 	 * メイン処理
-	 * @returns 
+	 * @returns
 	 */
 	const updateCorrectMistakes = async (record) =>
 	{
@@ -336,7 +346,7 @@
 
 	/**
 	 * 一覧表示イベント
-	 * @returns 
+	 * @returns
 	 */
 	kintone.events.on('app.record.detail.show', async (event) =>
 	{
