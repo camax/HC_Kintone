@@ -57,7 +57,8 @@
       spinner.open();
 
       // 出荷管理のレコードを取得
-      let shippingManageRecords = await GetAllRecords(HC_APP_ID_SHIPPING_BEAUTH, '注文日 >= LAST_MONTH() and 数量 >= 1 and 発注数管理にカウント not in ("済")');
+      const queryBEAUTH = '掲載媒体名 = "eecoto" ' + 'and 注文日 >= LAST_MONTH() ' + 'and 数量 >= 1 ' + 'and 発注数管理にカウント not in ("済")';
+      let shippingManageRecords = await GetAllRecords(HC_APP_ID_SHIPPING_BEAUTH, queryBEAUTH);
       console.log('出荷管理のレコード', shippingManageRecords);
 
       // 案件管理のレコードを取得
@@ -71,8 +72,7 @@
       // 発注数管理のレコードを取得
       let orderNumberRecords = await GetAllRecords(APP_ID, '日付 >= LAST_MONTH()');
       console.log('発注数管理のレコード', orderNumberRecords);
-
-      let orderSummaryByProject = [];
+      let arrAllOrderNums = [];
 
       /* 出荷管理のフィールド
             SKU：案件グループID
@@ -90,6 +90,12 @@
       console.log('案件グループID(SKU)でグループ化された出荷管理のレコード', groupedShippingRecords);
       // 案件グループIDでループ
       for (const groupId in groupedShippingRecords) {
+        // 🧱 案件グループIDが空・null・undefined の場合はスキップ
+        if (!groupId || groupId.trim() === '') {
+          console.warn('⚠ 案件グループIDが空の出荷レコードをスキップ:', groupedShippingRecords[groupId]);
+          continue;
+        }
+
         let shippingRecs = groupedShippingRecords[groupId];
 
         // 注文日ごとの数量を取得
@@ -122,15 +128,33 @@
       for (let ii = 0; ii < arrAllOrderNums.length; ii++) {
         let shippingRec = arrAllOrderNums[ii];
         // 案件レコードを取得
-        let matRec = matterRecords.find((rec) => rec.案件グループID.value == shippingRec.案件グループID && rec.掲載媒体名.value == MEDIA_CODE);
-        if (!matRec) continue;
+
+        let matRec = matterRecords.find((rec) => {
+          const skuShipping = String(shippingRec.案件グループID || '').trim(); // 出荷管理側
+          const skuMatter = String(rec.案件グループID.value || '').trim(); // 案件管理側
+          const mediaMatter = String(rec.掲載媒体名.value || '').toLowerCase(); // 案件管理の媒体名
+          const mediaCode = MEDIA_CODE.toLowerCase(); // 固定コード
+
+          return skuMatter === skuShipping && mediaMatter === mediaCode;
+        });
+        if (!matRec) {
+          console.warn(`❌ 案件マッチ失敗: SKU=${shippingRec.案件グループID} / MEDIA=${MEDIA_CODE}（案件管理に該当媒体なし）`);
+          console.log(
+            '案件管理サンプル:',
+            matterRecords.slice(0, 3).map((r) => ({
+              案件グループID: r.案件グループID.value,
+              掲載媒体名: r.掲載媒体名.value,
+            }))
+          );
+          continue;
+        }
 
         for (let jj = 0; jj < shippingRec.注文日ごとの数量.length; jj++) {
           // 生の注文日文字列を取得
           let rawDate = (shippingRec.注文日ごとの数量[jj].注文日 || '').trim();
 
           // ISO形式（例: 2025-10-23）としてパース
-          let dtOrder = luxon.DateTime.fromISO(rawDate);
+          let dtOrder = luxon.DateTime.fromISO(rawDate, { zone: 'Asia/Tokyo' });
 
           // ISO形式で無効なら、スラッシュ区切り（例: 2025/10/23）も試す
           if (!dtOrder.isValid) {
@@ -144,7 +168,7 @@
 
           // まだ無効ならエラーログ出してスキップ
           if (!dtOrder.isValid) {
-            console.warn('注文日が不明な形式です:', rawDate);
+            console.warn(`❌ 無効な注文日フォーマット: "${rawDate}" (案件グループID: ${shippingRec.案件グループID})`);
             continue;
           }
 
@@ -154,10 +178,22 @@
             continue;
           }
 
-          let dtFirst = dtOrder.set({ day: 1 });
+          // === ここを追加 ===
+          let dtFirst = dtOrder.startOf('month');
 
-          // 発注数管理から案件管理レコードID＆日付でレコードを取得
-          let orderNumberRec = orderNumberRecords.find((rec) => rec.案件管理レコードID.value == matRec.$id.value && rec.日付.value == dtFirst.toFormat('yyyy-MM-dd'));
+          // Luxonの有効性チェック
+          if (!dtFirst.isValid) {
+            console.warn('⚠ dtFirstが無効です:', rawDate, dtFirst.invalidExplanation);
+            continue;
+          }
+
+          // 発注数管理から案件グループID＆日付でレコードを取得（堅牢化）
+          let orderNumberRec = orderNumberRecords.find((rec) => {
+            const orderMatterId = String(rec.案件管理レコードID?.value || '').trim(); // 発注数管理の案件管理レコードID
+            const matterId = String(matRec.$id?.value || '').trim(); // 案件管理のID
+            const dateValue = String(rec.日付?.value || '');
+            return orderMatterId === matterId && dateValue === dtFirst.toFormat('yyyy-MM-dd');
+          });
           if (!orderNumberRec) {
             // 発注数管理のレコードが無い場合、新規作成（まずは素のレコードだけ作る）
             const addResp = await client.record.addRecord({
@@ -173,7 +209,6 @@
               continue;
             }
 
-            let orderNumberRec;
             try {
               const getResp = await client.record.getRecord({ app: APP_ID, id: addResp.id });
               orderNumberRec = getResp.record;
@@ -193,27 +228,74 @@
 
           // 発注数管理に販売数を加算（未定義でも0扱い）
           const numDay = dtOrder.get('day');
-          const current = Number(orderNumberRec[`day_${numDay}`]?.value || 0);
+          // 最初に定義済み
+          const recData = orderNumberRec?.record ?? orderNumberRec; // recordがある場合のみ採用
           const addQty = Number(shippingRec.注文日ごとの数量[jj].数量 || 0);
-          orderNumberRec[`day_${numDay}`] = { value: current + addQty };
+          const current = Number(recData[`day_${numDay}`]?.value || 0);
+          recData[`day_${numDay}`] = { value: current + addQty };
 
           console.log('更新後の発注数管理のレコード', orderNumberRec);
-
           console.log('更新対象レコード数:', updateRecords.length);
-          updateRecords.push(orderNumberRec);
+
+          console.log('--- 発注数管理更新チェック ---');
+          console.log('orderNumberRec:', orderNumberRec);
+
+          // null 安全化 & デバッグ補助
+          const safe案件管理レコードID = orderNumberRec?.record?.案件管理レコードID?.value ?? orderNumberRec?.案件管理レコードID?.value ?? '(未設定)';
+          console.log('案件管理レコードID:', safe案件管理レコードID);
+
+          console.log('注文日:', rawDate);
+          console.log(
+            '更新対象dayフィールド:',
+            Object.keys(recData).filter((k) => k.startsWith('day_'))
+          );
+          console.log('追加数量(addQty):', addQty);
+          console.log('更新前updateRecords件数:', updateRecords.length);
+
+          // ✅ 再宣言せず、そのまま再利用
+          const recordId = recData.$id?.value || recData.id;
+          if (!recordId) {
+            console.warn('⚠ レコードIDが未定義のためスキップ:', recData);
+            continue;
+          }
+
+          const dayFields = {};
+          for (let i = 1; i <= 31; i++) {
+            const key = `day_${i}`;
+            if (recData[key]?.value !== undefined) {
+              dayFields[key] = { value: recData[key].value };
+            }
+          }
+          const existing = updateRecords.findIndex((r) => r.id === recordId);
+          if (existing >= 0) {
+            Object.assign(updateRecords[existing].record, dayFields);
+          } else {
+            updateRecords.push({ id: recordId, record: dayFields });
+          }
+
+          // === 更新後の状態確認 ===
+          console.log('更新後updateRecords件数:', updateRecords.length);
+          console.log('直近の更新対象:', updateRecords[updateRecords.length - 1]);
         }
       }
 
       // 発注数管理の更新用のデータを生成
       let upOrderNumData = [];
       for (let ii = 0; ii < updateRecords.length; ii++) {
-        let rec = updateRecords[ii];
+        let recObj = updateRecords[ii];
+        const recordId = recObj.id;
+        const rec = recObj.record;
         const days = {};
         for (let i = 1; i <= 31; i++) {
           days[`day_${i}`] = { value: Number(rec[`day_${i}`]?.value || 0) };
         }
+        if (!recordId) {
+          console.warn('⚠ レコードIDが未定義のためスキップ:', rec);
+          continue;
+        }
+        // --- 更新対象に追加 ---
         upOrderNumData.push({
-          id: rec.$id.value,
+          id: recordId,
           record: days,
         });
       }
@@ -223,10 +305,18 @@
       const chunkSize = 100;
       for (let i = 0; i < upOrderNumData.length; i += chunkSize) {
         const chunk = upOrderNumData.slice(i, i + chunkSize);
-        await client.record.updateAllRecords({
-          app: APP_ID,
-          records: chunk,
-        });
+        try {
+          await client.record.updateAllRecords({ app: APP_ID, records: chunk });
+        } catch (err) {
+          console.error('updateAllRecords失敗:', err);
+          for (const rec of chunk) {
+            try {
+              await client.record.updateRecord({ app: APP_ID, id: rec.id, record: rec.record });
+            } catch (subErr) {
+              console.warn('個別更新失敗:', rec.id, subErr);
+            }
+          }
+        }
       }
 
       // 出荷管理の更新用のデータを生成
@@ -234,8 +324,14 @@
       for (let ii = 0; ii < shippingManageRecords.length; ii++) {
         let rec = shippingManageRecords[ii];
         if (rec.発注数管理にカウント.value !== '済') continue;
+
+        if (!rec.$id?.value && !rec.id) {
+          console.warn('出荷管理IDが不明なためスキップ:', rec);
+          continue;
+        }
+
         upShippingData.push({
-          id: rec.$id.value,
+          id: rec.$id?.value || rec.id,
           record: {
             発注数管理にカウント: { value: '済' },
           },
