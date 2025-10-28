@@ -124,6 +124,67 @@
       const malls = HC_MALLS;
       let groupId = null;
       for (let mall of malls) {
+        // Temu専用分岐（共通ファイル利用）
+        if (mall === 'Temu') {
+          // 共通関数で媒体固有ルール適用
+          record = HC_UTILS.applyMallSpecificRules('temu', record);
+
+          // Temu用フィールド設定（基本的には他媒体と同様）
+          let paramRecord = {
+            掲載依頼レコードID: { value: record.$id.value },
+            掲載依頼レコードURL: { value: 'https://' + HC_DOMAIN + '/k/' + HC.apps.掲載依頼.id + '/show#record=' + record.$id.value },
+            掲載モール: { value: 'Temu' },
+            掲載媒体名: { value: 'Temu' },
+            掲載商品名: { value: record['掲載商品名_その他'].value || record['掲載商品名'].value },
+            メーカー確認: { value: record['メーカー確認'].value },
+            税率: { value: record['税率'].value },
+            最短賞味期限: { value: record['最短賞味期限'].value },
+            掲載終了日: { value: record['掲載終了日_その他'].value || record['掲載終了日'].value },
+            掲載残日数: { value: record['掲載残日数_その他'].value || record['掲載残日数'].value },
+            セット数: { value: record['セット数_temu']?.value || 0 },
+            売価_税抜: { value: record['売価_税抜_temu']?.value || 0 },
+            HC利益率: { value: record['HC利益率_temu']?.value || 0 },
+            配送サイズ名: { value: record['配送サイズ名'].value },
+            資材名: { value: record['資材名'].value },
+            アソート有無: { value: record['アソート有無'].value },
+            三菱手数料バラ_税抜: { value: record['三菱手数料バラ_税抜'].value },
+            検品料: { value: record['検品料'].value },
+            緩衝材費有無: { value: record['緩衝材費有無'].value },
+            配送費追加: { value: record['配送費追加'].value },
+            分析カテゴリーID: { value: record['分析カテゴリーID'].value },
+            セット入数合計: { value: record['セット入数合計'].value },
+            希望小売価格セット_税抜: { value: record['希望小売価格セット_税抜'].value },
+            希望小売価格セット_税込: { value: record['希望小売価格セット_税込'].value },
+            取引形式: { value: record['取引形式'].value },
+            商品数: { value: record['セット数_temu']?.value || 0 },
+            商品の総取り扱い数: { value: record['セット数_temu']?.value || 0 },
+          };
+
+          // 採番（共通関数で生成）
+          try {
+            let todayStr = HC_UTILS.formatDate(new Date()).replace(/-/g, '');
+            const temuNumber = HC_UTILS.formatMallNumber('TEMU', todayStr);
+            paramRecord['モール管理番号'] = { value: temuNumber };
+          } catch (e) {
+            HC_UTILS.handleError('TemuMallNumber', e, record);
+          }
+
+          // 案件管理アプリに登録
+          let param = { app: HC_MATTER_APP_ID, record: paramRecord };
+          await new KintoneRestAPIClient().record
+            .addRecord(param)
+            .then(async function (resp) {
+              matterIds.push(resp.id);
+              if (groupId === null) groupId = resp.id;
+              UpdateRecodeToMatterApp(HC_MATTER_APP_ID, resp.id, groupId);
+            })
+            .catch(function (e) {
+              HC_UTILS.handleError('CreateTemuRecord', e, record);
+            });
+
+          continue; // Temu処理を終えたら次の媒体へ
+        }
+
         if (mall == '坂戸以外') continue;
 
         // ★ FiNC を WELBOX に置き換える
