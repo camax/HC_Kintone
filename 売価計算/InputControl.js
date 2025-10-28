@@ -78,6 +78,7 @@
   kintone.events.on(['app.record.create.show'], async (event) => {
     await generateItemSubTable(event);
     disableGlobalFields(event);
+    setDefaultValues(event); // ★ 資材名 に「資材費0円」を入れる（今回追加）
     setFieldAccessibility(event);
     resetLinkedFields(event); // 複製時もここで初期化
     // 初期描画後の競合対策（再描画をまたいで有効化を確定）
@@ -314,6 +315,23 @@
     const r = event.record;
     if (r[R.REQ_ID]) r[R.REQ_ID].value = '';
     if (r[R.REQ_URL]) r[R.REQ_URL].value = '';
+  }
+
+  /**
+   * 5.1) 初期値設定（ルックアップ前の表示用）
+   * - 資材名（ルックアップフィールド）が空欄の場合、「資材費0円」を仮表示する
+   * - ルックアップ後は自動的に上書きされるため問題なし
+   */
+  function setDefaultValues(event) {
+    const r = event.record;
+
+    // 資材名（ルックアップフィールド）が空欄のときだけ表示
+    if (r['資材名'] && !r['資材名'].value) {
+      r['資材名'].value = '資材費0円';
+      if (DEBUG) console.log('[setDefaultValues] 資材名に初期値を設定: 資材費0円');
+    }
+
+    return event;
   }
 
   /**
