@@ -56,6 +56,61 @@
     try {
       spinner.open();
 
+      // === 発注数レコード追加処理（呼び出しより前に配置）===
+      const addOrderRecord = async (orderData) => {
+        try {
+          // 1) 登録
+          const created = await client.record.addRecord({
+            app: APP_ID, // ← このファイルは APP_ID を使用
+            record: orderData,
+          });
+
+          const newId = created?.id;
+
+          // 2) ID再取得（保険：ソースIDで一意取得する設計の場合）
+          const checkId = async () => {
+            if (newId) return newId;
+
+            // ※アプリに「ソースID」フィールドが無い場合、この保険ロジックは削除してOK
+            const recs = await client.record.getRecords({
+              app: APP_ID,
+              query: `ソースID = "${orderData['ソースID']?.value || ''}" limit 1`,
+            });
+            return recs.records?.[0]?.$id?.value || null;
+          };
+
+          const id = await checkId();
+          if (!id) {
+            console.error('🚨 レコードID取得不能（保険でも取得できず）', orderData);
+            return null;
+          }
+
+          // 3) ルックアップ・発注先補完（案件管理→発注先）
+          const after = await client.record.getRecord({ app: APP_ID, id });
+          const vendor = after.record['発注先']?.value;
+          const matterId = after.record['案件管理レコードID']?.value;
+
+          if (!vendor && matterId) {
+            console.warn(`⚠️ 発注先空欄 → 案件管理(${matterId})から補完`);
+            const matter = await client.record.getRecord({ app: HC_APP_ID_MATTER, id: matterId });
+            const autoVendor = matter.record['発注先']?.value;
+            if (autoVendor) {
+              await client.record.updateRecord({
+                app: APP_ID,
+                id,
+                record: { 発注先: { value: autoVendor } },
+              });
+              console.log('✅ 発注先自動補完成功:', autoVendor);
+            }
+          }
+
+          return id;
+        } catch (e) {
+          console.error('❌ addOrderRecord エラー', e, orderData);
+          throw e;
+        }
+      };
+
       // 出荷管理のレコードを取得
       const queryBEAUTH = '掲載媒体名 = "eecoto" ' + 'and 注文日 >= LAST_MONTH() ' + 'and 数量 >= 1 ' + 'and 発注数管理にカウント not in ("済")';
       let shippingManageRecords = await GetAllRecords(HC_APP_ID_SHIPPING_BEAUTH, queryBEAUTH);
@@ -195,41 +250,50 @@
             return orderMatterId === matterId && dateValue === dtFirst.toFormat('yyyy-MM-dd');
           });
           if (!orderNumberRec) {
-            // 発注数管理のレコードが無い場合、新規作成（まずは素のレコードだけ作る）
-            const addResp = await client.record.addRecord({
-              app: APP_ID,
-              record: {
-                案件管理レコードID: { value: matRec.$id.value },
-                日付: { value: dtFirst.toFormat('yyyy-MM-dd') },
-              },
+            const newId = await addOrderRecord({
+              案件管理レコードID: { value: String(matRec.$id.value) },
+              日付: { value: dtFirst.toFormat('yyyy-MM-dd') },
+
+              // ▼オプション：重複防止のための一意キーを作るなら
+              // ソースID: { value: `${matRec.$id.value}_${dtFirst.toFormat('yyyy-MM')}` },
+
+              // ▼day_1〜day_31 をゼロ初期化したい場合（任意）
+              // ...Object.fromEntries(Array.from({length:31}, (_,i)=>[`day_${i+1}`, {value: 0}])),
             });
 
-            if (!addResp || !addResp.id) {
-              console.error('addRecordの返り値が不正です:', addResp);
+            if (!newId) {
+              console.warn('⚠ 新規レコード作成に失敗。次の注文日に進みます');
               continue;
             }
 
-            try {
-              const getResp = await client.record.getRecord({ app: APP_ID, id: addResp.id });
-              orderNumberRec = getResp.record;
-            } catch (err1) {
-              console.warn('getRecord失敗、1秒後に再試行:', err1);
-              // 1秒待って再試行
-              await new Promise((r) => setTimeout(r, 1000));
-              try {
-                const retryResp = await client.record.getRecord({ app: APP_ID, id: addResp.id });
-                orderNumberRec = retryResp.record;
-              } catch (err2) {
-                console.error('getRecord再試行も失敗しました:', err2);
-                continue; // それでも失敗した場合はスキップ
-              }
-            }
+            const newRec = await client.record.getRecord({ app: APP_ID, id: newId });
+            orderNumberRecords.push(newRec);
+            orderNumberRec = newRec;
           }
 
-          // 発注数管理に販売数を加算（未定義でも0扱い）
+          /* 発注数管理に販売数を加算（未定義でも0扱い） */
+
+          // ✅ recData補正（recordが無い場合も考慮）
+          const recData = orderNumberRec?.record ?? orderNumberRec;
+          if (!recData) {
+            console.warn('orderNumberRec が不正：', orderNumberRec);
+            continue;
+          }
+
+          // ✅ 日付の日（1〜31）
           const numDay = dtOrder.get('day');
-          // 最初に定義済み
-          const recData = orderNumberRec?.record ?? orderNumberRec; // recordがある場合のみ採用
+
+          // ✅ day_X フィールドが存在しない場合 0 を初期化
+          const dayKey = `day_${numDay}`;
+          if (!recData[dayKey]) {
+            recData[dayKey] = { value: 0 };
+          }
+
+          // ✅ recordオブジェクトが無いケースに強制付与
+          if (!recData.$id && orderNumberRec?.id) {
+            recData.$id = { value: orderNumberRec.id };
+          }
+
           const addQty = Number(shippingRec.注文日ごとの数量[jj].数量 || 0);
           const current = Number(recData[`day_${numDay}`]?.value || 0);
           recData[`day_${numDay}`] = { value: current + addQty };
@@ -253,7 +317,7 @@
           console.log('更新前updateRecords件数:', updateRecords.length);
 
           // ✅ 再宣言せず、そのまま再利用
-          const recordId = recData.$id?.value || recData.id;
+          const recordId = recData?.$id?.value || recData?.record?.$id?.value || recData?.id;
           if (!recordId) {
             console.warn('⚠ レコードIDが未定義のためスキップ:', recData);
             continue;
@@ -270,7 +334,14 @@
           if (existing >= 0) {
             Object.assign(updateRecords[existing].record, dayFields);
           } else {
-            updateRecords.push({ id: recordId, record: dayFields });
+            if (existing >= 0) {
+              Object.assign(updateRecords[existing].record, dayFields);
+            } else {
+              updateRecords.push({
+                id: recordId,
+                record: { ...dayFields }, // ←二重にならない指定
+              });
+            }
           }
 
           // === 更新後の状態確認 ===
