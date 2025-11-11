@@ -111,6 +111,20 @@
         }
       }
 
+      // --- 備考フィールドのマッピング ---
+      const noteFieldMap = {
+        くまポン: { src: '備考_kumapon', dest: '備考_くまポン' },
+        リロクラブ: { src: '備考_リロ', dest: '備考_リロ' },
+        ベネフィットワン: { src: '備考_ベネ', dest: '備考_ベネ' },
+        KAUCHE: { src: '備考_おためし', dest: '備考_おためし' },
+        V景品交換: { src: '備考_Tポイント', dest: '備考_Tポイント' },
+        社内販売ネットモール: { src: '備考_社販', dest: '備考_社販' },
+        TEMU: { src: '備考_TEMU', dest: '備考_temu' },
+        BEAUTH: { src: '備考_eecoto', dest: '備考_eecoto' },
+        モラタメ: { src: '備考_モラタメ', dest: '備考_モラタメ' },
+        WELBOX: { src: '備考_FiNC', dest: '備考_FiNC' },
+      };
+
       // --- 掲載情報 ---
       reqRecord['掲載商品名'] = { value: record['掲載商品名_au'].value };
       reqRecord['掲載商品名_その他'] = { value: record['掲載商品名_その他'].value };

@@ -144,9 +144,9 @@
         // 取引先のレコード（取引先名_部署名 でマッチ）
         let clientRec = clientRecords.find((rec) => rec.取引先名_部署名?.value == 発注先表示名) || clientRecords.find((rec) => rec.取引先名?.value == 発注先表示名);
 
-        // ---- Guard: 取引先 or 納品タイプが無い場合 ----
-        if (!clientRec || !clientRec.納品タイプ || !clientRec.納品タイプ.value) {
-          console.warn('❗[SKIP] 取引先 or 納品タイプ未設定', {
+        // ---- Guard: 取引先が無い場合のみスキップ ----
+        if (!clientRec) {
+          console.warn('❗[SKIP] 取引先マスタに該当なし', {
             row,
             発注先表示名,
             matterId: matRec.$id?.value,
@@ -154,16 +154,14 @@
             media: matRec.掲載媒体名_表示用?.value,
           });
 
-          const reason = !clientRec ? '取引先マスタに該当なし' : !clientRec.納品タイプ || !clientRec.納品タイプ.value ? '納品タイプ未設定' : '不明';
-
           skippedList.push({
             発注先表示名,
             案件ID: matRec.$id?.value,
             モール管理番号: matRec.モール管理番号?.value,
             掲載媒体名: matRec.掲載媒体名_表示用?.value,
-            取引先マスタ: clientRec ? '✅' : '❌',
-            納品タイプ: clientRec?.納品タイプ?.value ?? '❌',
-            理由: reason,
+            取引先マスタ: '❌',
+            納品タイプ: '―',
+            理由: '取引先マスタに該当なし',
           });
 
           continue;
