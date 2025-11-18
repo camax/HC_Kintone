@@ -1,14 +1,30 @@
 /**
- * 発注先ごとにまとめて発注書を作成
- * ・発注書を作成する際、発注先毎にまとめて作成
- * ・発注対象は昨日までの申込数
- * ・前回発注日を昨日の日付にする
- * ・前回発注日と同じ日付の申込数は加算しない
- * ・CSVを出力
+ * 発注商品金額表（テーブル）について：
+ * テーブル本体のフィールドコードは「発注商品金額表」
+ * 各行の値は「発注商品金額表_項目名」というフィールドコードで送信される
+ *
+ * 例：
+ *   発注商品金額表_納品日
+ *   発注商品金額表_商品コード
+ *   発注商品金額表_ケース数
+ *
+ * 旧コメントにある
+ * 「発注商品金額表 → 発注商品金額表表」は誤り。
  */
-(() => {
+(async () => {
   'use strict';
   luxon.Settings.defaultLocale = 'ja';
+
+  const safe = (v) => {
+    if (v === undefined || v === null || Number.isNaN(v)) return '';
+
+    // 数字のみ（整数 or 小数）の場合だけ数値に変換
+    if (typeof v === 'string' && /^[0-9]+(\.[0-9]+)?$/.test(v.trim())) {
+      return Number(v);
+    }
+
+    return v;
+  };
 
   const client = new KintoneRestAPIClient();
   const HC_APPLICATION_APP_ID = kintone.app.getId();
@@ -180,6 +196,7 @@
       })
       .catch(function (err) {
         console.log(err);
+        return 0; // ★ エラー時は必ず 0 を返す
       });
   };
 
@@ -191,23 +208,104 @@
    */
   const addSomeRecords = async (appId, recData) => {
     try {
-      return client.record
-        .addAllRecords({ app: appId, records: recData })
-        .then(function (resp) {
-          resParam.status = 1;
-          return resp;
-        })
-        .catch(function (e) {
-          console.log(e);
-          resParam.status = 9;
-          resParam.message = `レコードを作成できませんでした。\n` + e;
-          return;
-        });
-    } catch (ex) {
-      console.log(ex);
-      resParam.status = 9;
-      resParam.message = `レコードを作成できませんでした。\n` + ex;
-      return;
+      // ★ 件数確認
+      console.log('🔥 recData 件数:', recData?.length);
+
+      // ★ 内容 dump
+      console.log('🔥 Kintoneに送信予定のレコードデータ:', JSON.stringify(recData, null, 2));
+      console.log('◆ 送信する recData の 1件目:', JSON.stringify(recData[0], null, 2));
+      console.log('◆ recData のフィールド一覧:', Object.keys(recData[0]));
+
+      // ★ recData 再帰チェック
+      const deepCheck = (obj, path = '') => {
+        const errors = [];
+
+        for (const key in obj) {
+          const v = obj[key];
+          const current = path ? `${path}.${key}` : key;
+
+          if (v === null || v === undefined) {
+            errors.push(current);
+            continue;
+          }
+
+          if (typeof v === 'number' && Number.isNaN(v)) {
+            errors.push(current);
+            continue;
+          }
+
+          if (v === '') continue;
+
+          if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+            const d = new Date(v);
+            if (isNaN(d.getTime())) errors.push(current);
+            continue;
+          }
+
+          if (typeof v === 'object') {
+            errors.push(...deepCheck(v, current));
+          }
+        }
+        return errors;
+      };
+
+      recData.forEach((r, i) => {
+        const errs = deepCheck(r, `recData[${i}]`);
+        if (errs.length > 0) {
+          console.log(`⚠ 問題ありレコード path 一覧:`, errs);
+          console.log(`⚠ recData[${i}]`, JSON.stringify(r, null, 2));
+        }
+      });
+
+      // ★★★ ここが add() 本体 ★★★
+      const body = {
+        requests: [
+          {
+            method: 'POST',
+            api: '/k/v1/records.json',
+            payload: { app: appId, records: recData },
+          },
+        ],
+      };
+
+      console.log('🔥 bulkRequest body:', JSON.stringify(body, null, 2));
+
+      const resp = await kintone.api(kintone.api.url('/k/v1/bulkRequest.json', true), 'POST', body);
+
+      console.log('🔥 bulkRequest response:', JSON.stringify(resp, null, 2));
+
+      return resp;
+    } catch (e) {
+      console.log('🔥🔥🔥【ERROR in addSomeRecords】🔥🔥🔥');
+      console.log('◆ e:', e);
+
+      // ▼ これを必ず追加（必須）
+      console.log('◆ e.response:', JSON.stringify(e?.response, null, 2));
+      console.log('◆ e.response.data:', JSON.stringify(e?.response?.data, null, 2));
+      console.log('◆ e.results:', JSON.stringify(e?.results, null, 2));
+
+      if (e && e.body) {
+        console.error('◆ e.body ↓↓↓');
+        console.log(JSON.stringify(e.body, null, 2));
+      }
+
+      if (e && e.message) {
+        console.error('◆ e.message ↓↓↓');
+        console.error(e.message);
+      }
+
+      if (e && e.response && e.response.data) {
+        console.error('◆ e.response.data ↓↓↓');
+        console.log(JSON.stringify(e.response.data, null, 2));
+      }
+
+      // 生のレスポンスがあれば出す
+      if (e && e.response) {
+        console.error('◆ e.response ↓↓↓');
+        console.log(JSON.stringify(e.response, null, 2));
+      }
+
+      throw e;
     }
   };
 
@@ -226,9 +324,12 @@
           return resp;
         })
         .catch(function (e) {
-          console.log(e);
+          console.log('◆ updateAllRecords Error Object:', e);
+          console.log('◆ updateAllRecords Error Response:', e.response);
+          console.log('◆ updateAllRecords Error Data:', e.response?.data);
+
           resParam.status = 9;
-          resParam.message = `レコードを更新できませんでした。\n` + e;
+          resParam.message = `レコードを更新できませんでした。\n` + (e.response?.data?.message || e);
           return;
         });
     } catch (ex) {
@@ -279,10 +380,69 @@
     a.remove();
   };
 
+  const getDeliveryFromMaster = async (isMarudai) => {
+    // 丸大かどうかで見るレコードIDを切り替え
+    const recordId = isMarudai ? HC_DELIVERY_RANZAN_PLACE_ID : HC_DELIVERY_NORMAL_PLACE_ID;
+    // ここで使う ID は
+    //   HC_DELIVERY_NORMAL_PLACE_ID = 195
+    //   HC_DELIVERY_RANZAN_PLACE_ID = 197
+    // が上で定義されている前提
+
+    const body = {
+      app: HC_DELIVERY_APP_ID,
+      id: recordId,
+    };
+
+    const resp = await kintone.api(kintone.api.url('/k/v1/record.json', true), 'GET', body);
+
+    const rec = resp.record;
+
+    return {
+      // 👇 ここがルール
+      name: rec.納品先名.value, // 納品先マスタ.納品先名
+      info: rec.納品先情報.value, // 納品先マスタ.納品先情報
+    };
+  };
+
   /**
    * 発注書を作成
    */
   const createOrderRecords_Top = async () => {
+    // ▼▼ Jspreadsheet が初期化されるまで待つ（最大 2 秒）▼▼
+    const waitForSpreadsheet = async () => {
+      let ele = document.getElementById('spreadsheet');
+      for (let i = 0; i < 20; i++) {
+        // 100ms × 20 = 最大2秒待つ
+        if (ele && ele.jspreadsheet) return true;
+        await new Promise((r) => setTimeout(r, 100));
+        ele = document.getElementById('spreadsheet');
+      }
+      return false;
+    };
+
+    if (!(await waitForSpreadsheet())) {
+      console.log('❌ spreadsheet 初期化タイムアウト');
+      await Swal.fire({
+        icon: 'error',
+        title: 'データが読み込まれていません',
+        text: '画面が完全に読み込まれてから、もう一度押してください。',
+      });
+      return;
+    }
+    // ▲▲ 初期化待ちここまで ▲▲
+    // ▼▼ Jspreadsheet ロード確認用 ▼▼
+    let ele = document.getElementById('spreadsheet');
+    if (!ele || !ele.jspreadsheet) {
+      console.log('⚠ spreadsheet がまだ初期化されていません');
+      await Swal.fire({
+        icon: 'error',
+        title: 'データが読み込まれていません',
+        text: '画面のロードが終わってから、もう一度ボタンを押してください。',
+      });
+      return; // ここで中断
+    }
+    // ▲▲ Jspreadsheet ロード確認用 ▲▲
+    console.log('⑤ createOrderRecords_Top() 開始');
     // 納品予定日の入力を求める
     let { value: defaultDueDate } = await Swal.fire({
       title: '納品予定日',
@@ -468,7 +628,13 @@
       console.log('すべての案件の商品データ:', allItemData);
 
       // 掲載ステータスが掲載済～掲載終了済だけ or calc_発注バラ数が存在するものだけにする
-      allItemData = allItemData.filter((rec) => rec.掲載ステータス == '掲載済' || rec.掲載ステータス == '掲載終了依頼' || rec.掲載ステータス == '掲載終了済' || 'calc_発注バラ数' in rec);
+      allItemData = allItemData.filter((rec) => {
+        const isTargetStatus = rec.掲載ステータス === '掲載済' || rec.掲載ステータス === '掲載終了依頼' || rec.掲載ステータス === '掲載終了済';
+
+        const hasOrder = typeof rec.calc_発注バラ数 === 'number' && rec.calc_発注バラ数 > 0;
+
+        return isTargetStatus || hasOrder;
+      });
       console.log('掲載ステータスが掲載済～掲載終了済 or calc_発注バラ数が存在するものだけ:', allItemData);
 
       // 案件グループIDでグループ化
@@ -721,7 +887,7 @@
           }
 
           // 合計金額を求める
-          let sumAmount = shopRecords.reduce((acc, curr) => acc + curr['小計金額'], 0);
+          let sumAmount = shopRecords.reduce((acc, curr) => acc + (curr['小計金額'] || 0), 0);
 
           if (shopRecords.length > 0) {
             // 合計金額をセット
@@ -732,10 +898,13 @@
         }
       }
 
-      // 発注先数の合計を求める
-      let sumShopCount = allItemData.reduce((acc, curr) => acc + curr['発注先数'], 0);
-      // 最後のレコードに発注先数合計をセット
-      allItemData[allItemData.length - 1]['発注先数合計'] = sumShopCount;
+      //--------------------------------------------------
+      // 発注先数の合計（allItemData が空のときはスキップ）
+      //--------------------------------------------------
+      if (allItemData.length > 0) {
+        const sumShopCount = allItemData.reduce((acc, curr) => acc + (curr['発注先数'] || 0), 0);
+        allItemData[allItemData.length - 1]['発注先数合計'] = sumShopCount;
+      }
 
       // 連番をセット
       let allIdx = 1;
@@ -750,13 +919,34 @@
       });
 
       // 設定期間を取得
-      let startDate = document.getElementById('eleStartDate').value;
-      let endDate = document.getElementById('eleEndDate').value;
-      // CSVを出力
-      downloadCSV(convertToCSV(allItemData), luxon.DateTime.local().toFormat('yyyyMMddHHmmss') + '_発注書の詳細_' + luxon.DateTime.fromISO(startDate).toFormat('yyyyMMdd') + '～' + luxon.DateTime.fromISO(endDate).toFormat('yyyyMMdd'));
-      if (onlyCSV) {
-        resParam = { status: 0, message: '発注数CSVを出力しました。' };
+      const startEl = document.getElementById('eleStartDate');
+      const endEl = document.getElementById('eleEndDate');
+
+      // ▼ ガード（ここから）
+      if (!startEl || !endEl) {
+        resParam = { status: 9, message: '画面項目(eleStartDate / eleEndDate) が存在しません。' };
         return;
+      }
+
+      let startDate = startEl.value;
+      let endDate = endEl.value;
+
+      if (!startDate || !endDate) {
+        resParam = { status: 9, message: '期間（開始／終了日）が未入力です。' };
+        return;
+      }
+      // ▲ ガード（ここまで）
+
+      if (onlyCSV) {
+        // ▼ CSV データ生成（allItemData または必要な行の配列を指定）
+        const csvData = convertToCSV(allItemData);
+
+        // ▼ CSV ダウンロード
+        downloadCSV(csvData, `発注データ_${luxon.DateTime.local().toFormat('yyyyMMdd')}`);
+
+        resParam = { status: 0, message: '発注数CSVを出力しました。' };
+
+        return; // ← CSV出力後に終了
       }
 
       // Vサンプルのモール管理番号から削除した「V」を復活
@@ -782,17 +972,52 @@
         let itemTable = [];
         let arrDueDate = [];
         for (let itemCode of Object.keys(groupByItemCode)) {
-          let item = groupByItemCode[itemCode][0];
+          const group = groupByItemCode[itemCode] || [];
+          if (!group.length) {
+            console.log(`⚠ groupByItemCode[${itemCode}] が空です`);
+            continue;
+          }
+
+          const item = group[0];
+          if (!item) {
+            console.log(`⚠ item が undefined: itemCode=${itemCode}`);
+            continue;
+          }
+
+          console.log('🟦 item (before push):', JSON.stringify(item, null, 2));
+
+          // ★ 使用賞味期限をKintone向けに完全安全にセットする
+          let safeExpire = '';
+
+          if (item.刻印 && item.賞味期限) {
+            const iso = safe(item.賞味期限);
+
+            // YYYY-MM-DD の形式かどうか完全チェック
+            if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+              safeExpire = iso;
+            } else {
+              safeExpire = ''; // 不正な形式は強制的に空にする
+            }
+          } else {
+            safeExpire = '';
+          }
+
           itemTable.push({
             value: {
-              発注商品金額表_納品日: { value: item.納品予定日 },
-              発注商品金額表_商品コード: { value: item.商品コード },
-              発注商品金額表_使用賞味期限: { value: item.刻印 ? item.賞味期限 : '' },
-              発注商品金額表_バラ数量: { value: item.実際の発注バラ数 },
-              発注商品金額表_ケース数: { value: item.実際の発注ケース数 },
-              発注商品金額表_単価: { value: item.単価 },
+              発注商品金額表_納品日: { value: safe(item.納品予定日) },
+              発注商品金額表_商品コード: { value: safe(item.商品コード) },
+              発注商品金額表_使用賞味期限: {
+                value: safeExpire,
+              },
+              発注商品金額表_バラ数量: { value: safe(item.実際の発注バラ数) },
+              発注商品金額表_ケース数: { value: safe(item.実際の発注ケース数) },
+              発注商品金額表_単価: { value: safe(item.単価) },
             },
           });
+
+          // デバッグログ（ここだけで十分）
+          console.log('🟧 safe() 適用後の使用賞味期限:', safeExpire);
+
           if (item.納品予定日) {
             arrDueDate.push(luxon.DateTime.fromISO(item.納品予定日));
           }
@@ -803,22 +1028,70 @@
         // 最短納品予定日を求める
         let dtMin = arrDueDate.length > 0 ? luxon.DateTime.min(...arrDueDate) : '';
 
-        // モールとメーカーによって納品先が異なるため、納品先を求める
-        let deliveryPlace = deliveryRecords.find((rec) => rec.ID.value == HC_DELIVERY_NORMAL_PLACE_ID);
-        let mallName = orderRecords.find((rec) => rec['モール'])['モール'];
-        let deliverType = orderRecords.find((rec) => rec['納品タイプ']) ? orderRecords.find((rec) => rec['納品タイプ'])['納品タイプ'] : '';
-        if (SDGs_GROUP_MALL_NAME.includes(mallName) && deliverType == '直納') {
-          deliveryPlace = deliveryRecords.find((rec) => rec.ID.value == HC_DELIVERY_RANZAN_PLACE_ID);
-        }
+        // -----------------------------------------
+        // ★ 発注先名の値を確実に取得
+        // -----------------------------------------
+        const 発注先名_value = orderRecords.find((r) => r['発注先'])?.['発注先'] || orderRecords.find((r) => r['発注先名'])?.['発注先名'] || '';
 
-        orderDataForAll.push({
-          発注番号: { value: orderRecords.find((record) => record['発注番号'])['発注番号'] },
-          発注先名: { value: orderRecords.find((record) => record['発注先']) ? orderRecords.find((record) => record['発注先'])['発注先'] : '' },
-          納品先: { value: deliveryPlace ? deliveryPlace.納品先名.value : '' },
-          発注商品金額表: { value: itemTable },
-          最短納品予定日: { value: dtMin ? dtMin.toFormat('yyyy-MM-dd') : '' },
-          取引形式: { value: orderRecords.find((record) => record['取引形式'])['取引形式'] },
+        // -----------------------------------------
+        // ★ 丸大を含むかどうかで、見る納品先マスタを切り替え
+        //   - 丸大を含む  → ID197（嵐山）
+        //   - それ以外    → ID195（柏）
+        // -----------------------------------------
+        const isMarudai = 発注先名_value.includes('丸大');
+
+        // 納品先マスタから 「納品先名」「納品先情報」 を取得
+        const { name: deliveryName, info: deliveryInfo } = await getDeliveryFromMaster(isMarudai);
+
+        // -----------------------------------------
+        // ★ 発注書レコードにセット
+        //   - 納品先 ← 納品先マスタ.納品先名
+        //   - 納品先情報 ← 納品先マスタ.納品先情報
+        // -----------------------------------------
+        const recordData = {
+          発注番号: {
+            value: orderRecords.find((r) => r['発注番号'])?.['発注番号'] || '',
+          },
+
+          発注先名: { value: 発注先名_value },
+
+          // 👇 ここが今回のルールどおり
+          納品先: { value: deliveryName }, // 発注書.納品先  ← マスタ.納品先名
+          納品先情報: { value: deliveryInfo }, // 発注書.納品先情報 ← マスタ.納品先情報
+
+          // ※もし「発注書側にも 納品先名 フィールドがあって使いたいなら」
+          // 納品先名: { value: deliveryName }, をここに追加してOK
+
+          発注商品金額表: {
+            value: itemTable.map((row) => ({
+              value: row.value,
+            })),
+          },
+        };
+
+        //------------------------------------------------------
+        // ★ ルックアップ由来のゴミフィールドを完全削除（必須）
+        //------------------------------------------------------
+        const lookupFields = ['倉庫ID', '倉庫名', 'ルックアップ_納品先情報'];
+
+        lookupFields.forEach((f) => {
+          if (recordData[f] !== undefined) {
+            console.log(`⚠ 不要フィールド削除: ${f}`);
+            delete recordData[f];
+          }
         });
+
+        // ★ Kintone へ送信する前に null / undefined を空に正規化（必須）
+        Object.keys(recordData).forEach((key) => {
+          const val = recordData[key];
+          if (val && typeof val === 'object' && 'value' in val) {
+            if (val.value === null || val.value === undefined) {
+              val.value = '';
+            }
+          }
+        });
+
+        orderDataForAll.push(recordData);
       }
       console.log('発注書レコード用のデータ:', orderDataForAll);
 
@@ -845,7 +1118,14 @@
       console.log('追加用データ:', orderDataForAdd);
       console.log('更新用データ:', orderDataForUpdate);
 
+      console.log('🔥🔥🔥【送信直前】orderDataForUpdate FULL DUMP ↓↓↓');
+      console.log(JSON.stringify(orderDataForUpdate, null, 2));
+
       let resOrders = [];
+
+      // ★★★★★ これが「絶対に必要な」完全ダンプ ★★★★★
+      console.log('🔥🔥🔥【送信直前】orderDataForAdd FULL DUMP ↓↓↓');
+      console.log(JSON.stringify(orderDataForAdd, null, 2));
       if (orderDataForAdd.length > 0) {
         // 発注書レコードを一括追加
         resOrders = await addSomeRecords(HC_ORDER_APP_ID, orderDataForAdd);
@@ -959,6 +1239,11 @@
   };
 
   kintone.events.on('app.record.index.show', async (event) => {
+    // ▼ ここからデバッグを挿入（※必ずこの位置）
+    console.log('===== 発注書作成 START =====');
+    console.log('event.records =', event.records);
+    console.log('レコード件数 =', event.records ? event.records.length : 'undefined');
+    // ▲ ここまでデバッグ
     if (event.viewId != 6427204 && event.viewId != 6428079) return event;
 
     try {
@@ -979,9 +1264,13 @@
           text: '発注書作成',
           type: 'submit',
         });
+
+        console.log('② 発注書作成ボタン生成 OK:', createOrderButton);
+
         //createOrderButton.style.verticalAlign = 'middle';
         //createOrderButton.style.marginLeft = "10px";
         createOrderButton.addEventListener('click', () => {
+          console.log('④ 発注書作成ボタンクリック発生');
           onlyCSV = false;
           createOrderRecords_Top();
         });
