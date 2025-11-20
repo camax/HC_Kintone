@@ -301,63 +301,75 @@ const formatForExcel = (val) => (val ? `="${val}"` : '');
       }
     }
 
-    // 媒体ごとに getAllRecords を並列発火（個別の失敗は握り潰して結果に載せる）
-    const tasks = SHIPPING_SOURCES.map(({ key, app }) =>
-      (async () => {
-        // この媒体の計時開始（全リトライを含めた時間）
-        const t0Media = nowMs();
-        let attempts = 0;
-        let lastErr = null;
-        for (let i = 0; i <= MAX_RETRY; i++) {
-          try {
-            attempts = i + 1;
-            const recs = await client.record.getAllRecords({ app, condition: CONDITION });
-            if (typeof DEBUG !== 'undefined' && DEBUG) {
-              console.log(`[GetShippingRecords] ${key} 取得成功（試行 ${i + 1}/${MAX_RETRY + 1}）: ${recs?.length ?? 0}件`);
-            }
-            // ── 成功：媒体ごとの計測を1回だけ反映 ──
+    // 媒体ごとに getAllRecords を並列発火（同時実行数を制限）
+    const CONCURRENCY_LIMIT = 3;
+    const queue = [...SHIPPING_SOURCES];
+    const results = [];
+
+    const processMedia = async ({ key, app }) => {
+      // この媒体の計時開始（全リトライを含めた時間）
+      const t0Media = nowMs();
+      let attempts = 0;
+      let lastErr = null;
+      for (let i = 0; i <= MAX_RETRY; i++) {
+        try {
+          attempts = i + 1;
+          const recs = await client.record.getAllRecords({ app, condition: CONDITION });
+          if (typeof DEBUG !== 'undefined' && DEBUG) {
+            console.log(`[GetShippingRecords] ${key} 取得成功（試行 ${i + 1}/${MAX_RETRY + 1}）: ${recs?.length ?? 0}件`);
+          }
+          // ── 成功：媒体ごとの計測を1回だけ反映 ──
+          const elapsed = lapMs(t0Media);
+          METRICS.api.getShip += 1; // 成功媒体のカウント
+          METRICS.time.getShipMs += elapsed; // 媒体時間を合算
+          METRICS.byMedia[key].getShip.attempts = attempts;
+          METRICS.byMedia[key].getShip.ms += elapsed;
+          METRICS.byMedia[key].getShip.ok = true;
+          METRICS.byMedia[key].getShip.count = recs?.length ?? 0;
+          METRICS.byMedia[key].getShip.code = null; // 成功なので無し
+          return { key, recs };
+        } catch (e) {
+          lastErr = e;
+          const code = e?.response?.status ?? e?.status ?? 0;
+          if (typeof DEBUG !== 'undefined' && DEBUG) {
+            console.warn(`[GetShippingRecords] ${key} 失敗 code=${code}（試行 ${i + 1}/${MAX_RETRY + 1}）`, e);
+          }
+          if (!shouldRetry(e) || i === MAX_RETRY) {
+            // ── 失敗：媒体ごとの最終結果を記録 ──
             const elapsed = lapMs(t0Media);
-            METRICS.api.getShip += 1; // 成功媒体のカウント
-            METRICS.time.getShipMs += elapsed; // 媒体時間を合算
             METRICS.byMedia[key].getShip.attempts = attempts;
             METRICS.byMedia[key].getShip.ms += elapsed;
-            METRICS.byMedia[key].getShip.ok = true;
-            METRICS.byMedia[key].getShip.count = recs?.length ?? 0;
-            METRICS.byMedia[key].getShip.code = null; // 成功なので無し
-            return { key, recs };
-          } catch (e) {
-            lastErr = e;
-            const code = e?.response?.status ?? e?.status ?? 0;
-            if (typeof DEBUG !== 'undefined' && DEBUG) {
-              console.warn(`[GetShippingRecords] ${key} 失敗 code=${code}（試行 ${i + 1}/${MAX_RETRY + 1}）`, e);
-            }
-            if (!shouldRetry(e) || i === MAX_RETRY) {
-              // ── 失敗：媒体ごとの最終結果を記録 ──
-              const elapsed = lapMs(t0Media);
-              METRICS.byMedia[key].getShip.attempts = attempts;
-              METRICS.byMedia[key].getShip.ms += elapsed;
-              METRICS.byMedia[key].getShip.ok = false;
-              METRICS.byMedia[key].getShip.count = 0;
-              METRICS.byMedia[key].getShip.code = e?.response?.status ?? e?.status ?? null;
-              return { key, error: e };
-            }
-            const jitter = Math.floor(Math.random() * 100);
-            await sleep(BASE_DELAY * Math.pow(2, i) + jitter);
+            METRICS.byMedia[key].getShip.ok = false;
+            METRICS.byMedia[key].getShip.count = 0;
+            METRICS.byMedia[key].getShip.code = e?.response?.status ?? e?.status ?? null;
+            return { key, error: e };
           }
+          const jitter = Math.floor(Math.random() * 100);
+          await sleep(BASE_DELAY * Math.pow(2, i) + jitter);
         }
-        // ── 失敗：媒体ごとの最終結果を記録 ──
-        const elapsed = lapMs(t0Media);
-        METRICS.byMedia[key].getShip.attempts = attempts;
-        METRICS.byMedia[key].getShip.ms += elapsed;
-        METRICS.byMedia[key].getShip.ok = false;
-        METRICS.byMedia[key].getShip.count = 0;
-        METRICS.byMedia[key].getShip.code = lastErr?.response?.status ?? lastErr?.status ?? null;
-        // 通常ここには来ないが型を合わせる
-        return { key, error: lastErr || new Error('unknown error') };
-      })()
-    );
+      }
+      // ── 失敗：媒体ごとの最終結果を記録 ──
+      const elapsed = lapMs(t0Media);
+      METRICS.byMedia[key].getShip.attempts = attempts;
+      METRICS.byMedia[key].getShip.ms += elapsed;
+      METRICS.byMedia[key].getShip.ok = false;
+      METRICS.byMedia[key].getShip.count = 0;
+      METRICS.byMedia[key].getShip.code = lastErr?.response?.status ?? lastErr?.status ?? null;
+      // 通常ここには来ないが型を合わせる
+      return { key, error: lastErr || new Error('unknown error') };
+    };
 
-    const results = await Promise.all(tasks); // 個々が catch/return 済みなのでここは reject しない
+    const worker = async () => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (!item) break;
+        const res = await processMedia(item);
+        results.push(res);
+      }
+    };
+
+    // ワーカーを起動して待機
+    await Promise.all(Array.from({ length: CONCURRENCY_LIMIT }, () => worker()));
 
     // 反映＆失敗媒体集計
     const failed = [];
