@@ -123,7 +123,17 @@
         BEAUTH: { src: '備考_eecoto', dest: '備考_eecoto' },
         モラタメ: { src: '備考_モラタメ', dest: '備考_モラタメ' },
         WELBOX: { src: '備考_FiNC', dest: '備考_FiNC' },
+        Pontaパス: { src: '備考_au', dest: '備考_au' },
+        Vサンプル: { src: '備考_Tサンプル', dest: '備考_Tサンプル' },
       };
+
+      // 備考フィールドの送信処理を追加
+      for (const mall in noteFieldMap) {
+        const { src, dest } = noteFieldMap[mall];
+        if (record[src] && record[src].value !== undefined) {
+          reqRecord[dest] = { value: record[src].value };
+        }
+      }
 
       // --- 掲載情報 ---
       reqRecord['掲載商品名'] = { value: record['掲載商品名_au'].value };
