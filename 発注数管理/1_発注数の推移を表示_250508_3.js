@@ -199,6 +199,30 @@
 
       // 案件グループIDが一致するセット数管理のレコードを取得
       let setNumRec = setNumberRecords.find((rec) => rec.案件グループID.value == groupedOrderAmountRecords[ii].案件グループID);
+
+      // 案件管理レコードIDが空の場合のガード処理
+      if (!groupedOrderAmountRecords[ii].案件管理レコードID) {
+        const errRec = groupedOrderAmountRecords[ii].今月 || groupedOrderAmountRecords[ii].先月;
+        const errId = errRec ? errRec.$id.value : '(不明)';
+        const errMsg = `【データ不備】案件管理IDが空のレコードが見つかりました。\nレコードID: ${errId}\nこのレコードはスキップします。`;
+        console.error(errMsg, groupedOrderAmountRecords[ii]);
+
+        // 初回のみポップアップ表示（ループ内で連発しないように制御しても良いが、今回はシンプルにswalがあれば出す）
+        // ※swalが未定義の場合はalertで代用
+        if (typeof swal === 'function') {
+           swal({
+             title: 'データ不備検出',
+             text: errMsg,
+             icon: 'error',
+             button: 'OK'
+           });
+        } else {
+           alert(errMsg);
+        }
+        // 画面を真っ白にするため（処理を中断するため）、エラーをスローして停止
+        throw new Error(errMsg);
+      }
+
       // セット数管理のレコードがない場合、作成する
       if (!setNumRec) {
         let resp = await addOneRecord(HC_SET_NUMBER_APP_ID, {
